@@ -111,7 +111,7 @@ async def library(request: Request):
     ).fetchall()
     conn.close()
     return templates.TemplateResponse(
-        "library.html", {"request": request, "clips": clips}
+        request, "library.html", {"clips": clips}
     )
 
 
@@ -129,8 +129,7 @@ async def edit_page(request: Request, clip_id: int):
     subdir = "raw" if clip["status"] != "edited" else "edited"
 
     return templates.TemplateResponse(
-        "editor.html",
-        {"request": request, "clip": clip, "subdir": subdir}
+        request, "editor.html", {"clip": clip, "subdir": subdir}
     )
 
 
@@ -205,8 +204,7 @@ async def share_clip(request: Request, slug: str):
 
     subdir = "edited" if clip["status"] == "edited" else "raw"
     return templates.TemplateResponse(
-        "share.html",
-        {"request": request, "clip": clip, "subdir": subdir}
+        request, "share.html", {"clip": clip, "subdir": subdir}
     )
 
 
@@ -219,6 +217,5 @@ async def share_image(request: Request, slug: str):
         raise HTTPException(404, "Image not found")
 
     return templates.TemplateResponse(
-        "share_image.html",
-        {"request": request, "image": img}
+        request, "share_image.html", {"image": img}
     )

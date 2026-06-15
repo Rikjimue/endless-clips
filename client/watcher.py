@@ -9,9 +9,10 @@ from watchdog.events import FileSystemEventHandler
 # --- Config ---
 VIDEO_FOLDER = r"C:\Users\rikji\Videos\Endless Clips"
 SCREENSHOT_FOLDER = r"C:\Users\rikji\Pictures\Endless Clips"
+FFMPEG_PATH = r"C:\Users\rikji\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.1-full_build\bin\ffmpeg.exe"
 
-VIDEO_UPLOAD_URL = "http://clips.jaioleeming.com:8000/upload"
-IMAGE_UPLOAD_URL = "http://clips.jaioleeming.com:8000/upload-image"
+VIDEO_UPLOAD_URL = "http://192.168.1.248:8000/upload"
+IMAGE_UPLOAD_URL = "http://192.168.1.248:8000/upload-image"
 
 REMUX_TO_MP4 = True
 VIDEO_EXTS = (".mp4", ".mkv", ".flv")
@@ -38,7 +39,11 @@ def remux_to_mp4(path: Path) -> Path:
     if path.suffix.lower() == ".mp4":
         return path
     out_path = path.with_suffix(".mp4")
-    cmd = ["ffmpeg", "-y", "-i", str(path), "-c", "copy", str(out_path)]
+    cmd = [
+    FFMPEG_PATH, "-y", "-i", str(path),
+    "-c", "copy", "-movflags", "+faststart",
+    str(out_path)
+    ]
     subprocess.run(cmd, check=True, capture_output=True)
     return out_path
 
