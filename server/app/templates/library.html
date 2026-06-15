@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head><title>Clip Library</title></head>
+<body style="font-family: sans-serif; max-width: 900px; margin: 40px auto;">
+    <h1>Clip Library</h1>
+    {% for clip in clips %}
+    <div style="border: 1px solid #ccc; padding: 12px; margin-bottom: 10px; border-radius: 6px;">
+        <div>
+            <strong>{{ clip.filename }}</strong>
+            — status: {{ clip.status }}
+            {% if clip.published %} — <span style="color: green;">published</span>{% endif %}
+        </div>
+        <div style="margin-top: 8px;">
+            <a href="/clip/{{ clip.id }}/edit">Edit</a>
+            {% if clip.published %}
+                | <a href="/c/{{ clip.slug }}">View share link</a>
+            {% else %}
+                <form action="/clip/{{ clip.id }}/publish" method="post" style="display:inline;">
+                    <button type="submit">Publish</button>
+                </form>
+            {% endif %}
+        </div>
+    </div>
+    {% else %}
+    <p>No clips yet.</p>
+    {% endfor %}
+</body>
+</html>
