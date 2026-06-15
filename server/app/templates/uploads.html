@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Uploads — Endless Clips{% endblock %}
+{% block body %}
+<div class="app">
+  {% include "_sidebar.html" %}
+  <div class="content">
+    <div class="content-header">
+      <h1>Uploads</h1>
+      <span class="meta">{{ uploads|length }} file{{ 's' if uploads|length != 1 else '' }}</span>
+    </div>
+
+    <div class="dropzone" id="dropzone">
+      <strong>Drag and drop files here</strong>, or click to browse
+      <input type="file" id="file-input" multiple hidden>
+    </div>
+    <div class="upload-progress-list" id="progress-list"></div>
+
+    {% if uploads %}
+    <div class="grid">
+      {% for u in uploads %}
+      <div class="card {{ 'card-compact' if u.kind != 'video' }}">
+        <div class="thumb">
+          {% if u.kind == 'video' and u.thumbnail %}
+          <img src="/media/thumbnails/{{ u.thumbnail }}" alt="">
+          {% elif u.kind == 'image' %}
+          <img src="/media/uploads/{{ u.filename }}" alt="">
+          {% else %}
+          <div class="thumb-placeholder">{{ (u.original_name.split('.')[-1] if '.' in u.original_name else 'FILE') | upper }}</div>
+          {% endif %}
+          <span class="kind-pill">{{ u.kind }}</span>
+        </div>
+        <div class="card-body">
+          <div class="card-title">{{ u.display_name or u.original_name }}</div>
+          <div class="card-meta">{{ u.created_at }}</div>
+          <div class="card-actions">
+            <button class="btn btn-outline" onclick="copyToClipboard(location.origin + '/u/{{ u.slug }}')">Copy</button>
+            <a href="/u/{{ u.slug }}" class="btn btn-primary" target="_blank" rel="noopener">View</a>
+          </div>
+          <div class="card-actions" style="margin-top:8px;">
+            <form action="/uploads/{{ u.id }}/rename" method="post" class="rename-row" style="flex:2;">
+              <input class="input" type="text" name="name" value="{{ u.display_name or u.original_name }}" placeholder="Rename...">
+              <button type="submit" class="btn btn-outline btn-sm">Save</button>
+            </form>
+            <form action="/uploads/{{ u.id }}/delete" method="post" onsubmit="return confirm('Delete this file?')">
+              <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+            </form>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty">No uploads yet. Drag a file above to get started.</div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('file-input');
+const progressList = document.getElementById('progress-list');
+
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+dropzone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropzone.classList.remove('dragover');
+  handleFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', () => handleFiles(fileInput.files));
+
+function handleFiles(files) {
+  let remaining = files.length;
+  for (const file of files) {
+    uploadFile(file, () => {
+      remaining -= 1;
+      if (remaining === 0) location.reload();
+    });
+  }
+}
+
+function uploadFile(file, onDone) {
+  const row = document.createElement('div');
+  row.className = 'upload-progress-item';
+  row.innerHTML = `<span>${file.name}</span><span>0%</span>`;
+  progressList.appendChild(row);
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/uploads/add');
+  xhr.upload.onprogress = (e) => {
+    if (e.lengthComputable) {
+      const pct = Math.round((e.loaded / e.total) * 100);
+      row.querySelector('span:last-child').textContent = pct + '%';
+    }
+  };
+  xhr.onload = () => {
+    row.querySelector('span:last-child').textContent = xhr.status === 200 ? 'Done' : 'Failed';
+    onDone();
+  };
+  xhr.onerror = () => {
+    row.querySelector('span:last-child').textContent = 'Failed';
+    onDone();
+  };
+  const formData = new FormData();
+  formData.append('file', file);
+  xhr.send(formData);
+}
+</script>
+{% endblock %}

@@ -1,59 +1,75 @@
 {% extends "base.html" %}
-{% block title %}Edit — {{ clip.filename }}{% endblock %}
+{% block title %}Edit — {{ clip.display_name or clip.filename }}{% endblock %}
 {% block head_extra %}
 <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
 {% endblock %}
 {% block body %}
-<div class="shell">
-  <a href="/" class="back-link">&larr; Library</a>
-  <div class="page-header">
-    <div class="wordmark"><span class="dot"></span> Endless Clips</div>
-    <div class="meta">status: {{ clip.status }}</div>
-  </div>
-
-  <div class="editor-layout">
-    <div class="main-col">
-      <div class="player-wrap">
-        <video id="player" playsinline controls>
-          <source src="/media/{{ subdir }}/{{ clip.filename }}" type="video/mp4">
-        </video>
-      </div>
-
-      <div class="trim-times">
-        <span class="timecode" id="start-display">0:00.00</span>
-        <span class="timecode" id="end-display">0:00.00</span>
-      </div>
-      <div class="trim-timeline" id="timeline">
-        <div class="trim-selection" id="trim-selection"></div>
-        <div class="trim-playhead" id="playhead"></div>
-        <div class="trim-handle" id="handle-start"></div>
-        <div class="trim-handle" id="handle-end"></div>
-      </div>
-
-      <form action="/clip/{{ clip.id }}/trim" method="post" id="trim-form">
-        <input type="hidden" name="start" id="start" value="0">
-        <input type="hidden" name="end" id="end" value="0">
-        <button type="submit" class="btn btn-primary btn-block">Trim &amp; save</button>
-      </form>
+<div class="app">
+  {% include "_sidebar.html" %}
+  <div class="content">
+    <a href="/" class="back-link">&larr; Library</a>
+    <div class="content-header">
+      <h1>{{ clip.display_name or clip.filename }}</h1>
+      <span class="meta">status: {{ clip.status }}</span>
     </div>
 
-    <div class="panel">
-      <h2>Share</h2>
-      {% if clip.published %}
-      <div class="share-link-box" id="share-link">/c/{{ clip.slug }}</div>
-      <button class="btn btn-outline btn-block" onclick="copyShareLink()">Copy link</button>
-      {% else %}
-      <form action="/clip/{{ clip.id }}/publish" method="post">
-        <button type="submit" class="btn btn-primary btn-block">Publish</button>
-      </form>
-      {% endif %}
+    <div class="editor-layout">
+      <div class="main-col">
+        <div class="player-wrap">
+          <video id="player" playsinline controls>
+            <source src="/media/{{ subdir }}/{{ clip.filename }}" type="video/mp4">
+          </video>
+        </div>
+
+        <div class="trim-times">
+          <span class="timecode" id="start-display">0:00.00</span>
+          <span class="timecode" id="end-display">0:00.00</span>
+        </div>
+        <div class="trim-timeline" id="timeline">
+          <div class="trim-selection" id="trim-selection"></div>
+          <div class="trim-playhead" id="playhead"></div>
+          <div class="trim-handle" id="handle-start"></div>
+          <div class="trim-handle" id="handle-end"></div>
+        </div>
+
+        <form action="/clip/{{ clip.id }}/trim" method="post" id="trim-form">
+          <input type="hidden" name="start" id="start" value="0">
+          <input type="hidden" name="end" id="end" value="0">
+          <button type="submit" class="btn btn-primary btn-block">Trim &amp; save</button>
+        </form>
+      </div>
+
+      <div>
+        <div class="panel">
+          <h2>Name</h2>
+          <form action="/clip/{{ clip.id }}/rename" method="post" class="rename-row">
+            <input class="input" type="text" name="name" value="{{ clip.display_name or clip.filename }}">
+            <button type="submit" class="btn btn-outline">Save</button>
+          </form>
+        </div>
+
+        <div class="panel">
+          <h2>Share</h2>
+          {% if clip.published %}
+          <div class="share-link-box" id="share-link">/c/{{ clip.slug }}</div>
+          <button class="btn btn-outline btn-block" onclick="copyToClipboard(shareLinkFull)">Copy link</button>
+          <a href="/c/{{ clip.slug }}" class="btn btn-primary btn-block" target="_blank" rel="noopener" style="margin-top:8px;">Open</a>
+          {% else %}
+          <form action="/clip/{{ clip.id }}/publish" method="post">
+            <button type="submit" class="btn btn-primary btn-block">Publish</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
     </div>
   </div>
 </div>
 
 <script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
 <script>
-const player = new Plyr('#player');
+const player = new Plyr('#player', {
+  controls: ['play-large', 'play', 'current-time', 'mute', 'volume', 'settings', 'fullscreen']
+});
 
 const timeline = document.getElementById('timeline');
 const selection = document.getElementById('trim-selection');
@@ -131,7 +147,6 @@ function setupDrag(handle, isStart) {
 setupDrag(handleStart, true);
 setupDrag(handleEnd, false);
 
-// click on track (not a handle) seeks the playhead for previewing
 timeline.addEventListener('pointerdown', (e) => {
   if (e.target === handleStart || e.target === handleEnd) return;
   const rect = timeline.getBoundingClientRect();
@@ -140,10 +155,11 @@ timeline.addEventListener('pointerdown', (e) => {
   player.currentTime = pct * duration;
 });
 
-const shareLink = document.getElementById('share-link');
-if (shareLink) shareLink.textContent = location.origin + shareLink.textContent;
-function copyShareLink() {
-  navigator.clipboard.writeText(shareLink.textContent);
+const shareLinkEl = document.getElementById('share-link');
+let shareLinkFull = '';
+if (shareLinkEl) {
+  shareLinkFull = location.origin + shareLinkEl.textContent;
+  shareLinkEl.textContent = shareLinkFull;
 }
 </script>
 {% endblock %}

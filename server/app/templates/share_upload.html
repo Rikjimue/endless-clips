@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}{{ upload.display_name or upload.original_name }} — Endless Clips{% endblock %}
+{% block head_extra %}
+{% if upload.kind == 'video' %}<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />{% endif %}
+{% endblock %}
+{% block body %}
+<div class="share-shell">
+  <div class="share-media">
+    <div class="share-title">{{ upload.display_name or upload.original_name }}</div>
+    {% if upload.kind == 'video' %}
+    <video id="player" playsinline controls autoplay>
+      <source src="/media/uploads/{{ upload.filename }}" type="video/mp4">
+    </video>
+    {% elif upload.kind == 'image' %}
+    <img src="/media/uploads/{{ upload.filename }}" alt="">
+    {% else %}
+    <div class="empty">This file type can't be previewed.</div>
+    <div class="share-download">
+      <a href="/media/uploads/{{ upload.filename }}" class="btn btn-primary" download>Download {{ upload.original_name }}</a>
+    </div>
+    {% endif %}
+  </div>
+  <div class="share-brand">Endless Clips</div>
+</div>
+{% if upload.kind == 'video' %}
+<script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
+<script>new Plyr('#player');</script>
+{% endif %}
+{% endblock %}

@@ -15,9 +15,10 @@ RAW_DIR = DATA_DIR / "raw"
 EDITED_DIR = DATA_DIR / "edited"
 IMAGES_DIR = DATA_DIR / "images"
 THUMBNAIL_DIR = DATA_DIR / "thumbnails"
+UPLOADS_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "clips.db"
 
-for d in (RAW_DIR, EDITED_DIR, IMAGES_DIR, THUMBNAIL_DIR):
+for d in (RAW_DIR, EDITED_DIR, IMAGES_DIR, THUMBNAIL_DIR, UPLOADS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI()
@@ -28,6 +29,9 @@ ADMIN_USERNAME = os.environ.get("CLIPS_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("CLIPS_PASSWORD", "changeme")
 
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET)
+
+VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".avi"}
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 
 class AuthRedirect(Exception):
@@ -86,6 +90,26 @@ def generate_thumbnail(video_path: Path):
     return None
 
 
+def detect_kind(filename: str) -> str:
+    ext = Path(filename).suffix.lower()
+    if ext in VIDEO_EXTS:
+        return "video"
+    if ext in IMAGE_EXTS:
+        return "image"
+    return "other"
+
+
+def media_type_for(path: Path) -> str:
+    ext = path.suffix.lower()
+    types = {
+        ".mp4": "video/mp4", ".mkv": "video/x-matroska", ".mov": "video/quicktime",
+        ".webm": "video/webm",
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp",
+    }
+    return types.get(ext, "application/octet-stream")
+
+
 # ---------- DB ----------
 
 def get_db():
@@ -100,6 +124,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS clips (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             filename TEXT NOT NULL,
+            display_name TEXT,
             status TEXT NOT NULL DEFAULT 'raw',
             slug TEXT UNIQUE,
             published INTEGER DEFAULT 0,
@@ -116,19 +141,32 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS uploads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            original_name TEXT,
+            display_name TEXT,
+            kind TEXT,
+            thumbnail TEXT,
+            slug TEXT UNIQUE,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
     existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(clips)").fetchall()]
     if "thumbnail" not in existing_cols:
         conn.execute("ALTER TABLE clips ADD COLUMN thumbnail TEXT")
     if "duration" not in existing_cols:
         conn.execute("ALTER TABLE clips ADD COLUMN duration REAL DEFAULT 0")
+    if "display_name" not in existing_cols:
+        conn.execute("ALTER TABLE clips ADD COLUMN display_name TEXT")
 
     conn.commit()
     conn.close()
 
 
 def backfill_metadata():
-    """Fill in thumbnail/duration for clips uploaded before these columns existed."""
     conn = get_db()
     rows = conn.execute(
         "SELECT * FROM clips WHERE thumbnail IS NULL OR duration IS NULL OR duration = 0"
@@ -156,17 +194,6 @@ backfill_metadata()
 # ---------- Media serving (range-request aware) ----------
 
 CHUNK_SIZE = 1024 * 1024
-
-
-def media_type_for(path: Path) -> str:
-    ext = path.suffix.lower()
-    if ext == ".mp4":
-        return "video/mp4"
-    if ext == ".png":
-        return "image/png"
-    if ext in (".jpg", ".jpeg"):
-        return "image/jpeg"
-    return "application/octet-stream"
 
 
 @app.get("/media/{subpath:path}")
@@ -242,7 +269,7 @@ async def logout(request: Request):
     return RedirectResponse(url="/login", status_code=303)
 
 
-# ---------- Upload endpoints ----------
+# ---------- Client upload endpoints (used by watcher) ----------
 
 @app.post("/upload")
 async def upload_video(file: UploadFile = File(...)):
@@ -259,8 +286,8 @@ async def upload_video(file: UploadFile = File(...)):
 
     conn = get_db()
     cur = conn.execute(
-        "INSERT INTO clips (filename, status, thumbnail, duration) VALUES (?, 'raw', ?, ?)",
-        (new_name, thumbnail, duration)
+        "INSERT INTO clips (filename, display_name, status, thumbnail, duration) VALUES (?, ?, 'raw', ?, ?)",
+        (new_name, file.filename, thumbnail, duration)
     )
     conn.commit()
     clip_id = cur.lastrowid
@@ -297,7 +324,7 @@ async def library(request: Request, user: bool = Depends(require_auth)):
     images = conn.execute("SELECT * FROM images ORDER BY created_at DESC LIMIT 24").fetchall()
     conn.close()
     return templates.TemplateResponse(
-        request, "library.html", {"clips": clips, "images": images}
+        request, "library.html", {"clips": clips, "images": images, "active": "library"}
     )
 
 
@@ -314,7 +341,7 @@ async def edit_page(request: Request, clip_id: int, user: bool = Depends(require
     subdir = "edited" if clip["status"] == "edited" else "raw"
 
     return templates.TemplateResponse(
-        request, "editor.html", {"clip": clip, "subdir": subdir}
+        request, "editor.html", {"clip": clip, "subdir": subdir, "active": "library"}
     )
 
 
@@ -334,7 +361,6 @@ async def trim_clip(clip_id: int, start: str = Form(...), end: str = Form(...), 
 
     cmd = [
         "ffmpeg", "-y",
-        "-hwaccel", "qsv", "-hwaccel_output_format", "qsv",
         "-i", str(src_path),
         "-ss", start, "-to", end,
         "-c:v", "h264_qsv", "-global_quality", "20",
@@ -358,6 +384,15 @@ async def trim_clip(clip_id: int, start: str = Form(...), end: str = Form(...), 
     conn.commit()
     conn.close()
 
+    return RedirectResponse(url=f"/clip/{clip_id}/edit", status_code=303)
+
+
+@app.post("/clip/{clip_id}/rename")
+async def rename_clip(clip_id: int, name: str = Form(...), user: bool = Depends(require_auth)):
+    conn = get_db()
+    conn.execute("UPDATE clips SET display_name = ? WHERE id = ?", (name.strip() or None, clip_id))
+    conn.commit()
+    conn.close()
     return RedirectResponse(url=f"/clip/{clip_id}/edit", status_code=303)
 
 
@@ -404,3 +439,78 @@ async def share_image(request: Request, slug: str):
     return templates.TemplateResponse(
         request, "share_image.html", {"image": img}
     )
+
+
+# ---------- Manual uploads ----------
+
+@app.get("/uploads")
+async def uploads_page(request: Request, user: bool = Depends(require_auth)):
+    conn = get_db()
+    uploads = conn.execute("SELECT * FROM uploads ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return templates.TemplateResponse(
+        request, "uploads.html", {"uploads": uploads, "active": "uploads"}
+    )
+
+
+@app.post("/uploads/add")
+async def add_upload(file: UploadFile = File(...), user: bool = Depends(require_auth)):
+    original_name = file.filename
+    ext = Path(original_name).suffix
+    new_name = f"{uuid.uuid4().hex}{ext}"
+    dest = UPLOADS_DIR / new_name
+
+    with open(dest, "wb") as f:
+        while chunk := await file.read(1024 * 1024):
+            f.write(chunk)
+
+    kind = detect_kind(original_name)
+    thumbnail = generate_thumbnail(dest) if kind == "video" else None
+    slug = uuid.uuid4().hex[:8]
+
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO uploads (filename, original_name, display_name, kind, thumbnail, slug) VALUES (?,?,?,?,?,?)",
+        (new_name, original_name, original_name, kind, thumbnail, slug)
+    )
+    conn.commit()
+    conn.close()
+
+    return {"ok": True, "slug": slug}
+
+
+@app.post("/uploads/{upload_id}/rename")
+async def rename_upload(upload_id: int, name: str = Form(...), user: bool = Depends(require_auth)):
+    conn = get_db()
+    conn.execute("UPDATE uploads SET display_name = ? WHERE id = ?", (name.strip() or None, upload_id))
+    conn.commit()
+    conn.close()
+    return RedirectResponse(url="/uploads", status_code=303)
+
+
+@app.post("/uploads/{upload_id}/delete")
+async def delete_upload(upload_id: int, user: bool = Depends(require_auth)):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM uploads WHERE id = ?", (upload_id,)).fetchone()
+    if row:
+        path = UPLOADS_DIR / row["filename"]
+        if path.exists():
+            path.unlink()
+        if row["thumbnail"]:
+            tp = THUMBNAIL_DIR / row["thumbnail"]
+            if tp.exists():
+                tp.unlink()
+        conn.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
+        conn.commit()
+    conn.close()
+    return RedirectResponse(url="/uploads", status_code=303)
+
+
+@app.get("/u/{slug}")
+async def share_upload(request: Request, slug: str):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM uploads WHERE slug = ?", (slug,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Not found")
+    return templates.TemplateResponse(request, "share_upload.html", {"upload": row})
