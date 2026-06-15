@@ -1,29 +1,65 @@
-<!DOCTYPE html>
-<html>
-<head><title>Edit Clip</title></head>
-<body style="font-family: sans-serif; max-width: 900px; margin: 40px auto;">
-    <h1>Edit Clip</h1>
-    <video id="player" src="/media/{{ subdir }}/{{ clip.filename }}" controls style="width: 100%; max-height: 500px;"></video>
+{% extends "base.html" %}
+{% block title %}Edit — {{ clip.filename }}{% endblock %}
+{% block body %}
+<div class="shell">
+  <a href="/" class="back-link">&larr; Library</a>
+  <div class="page-header">
+    <div class="wordmark"><span class="dot"></span> Endless Clips</div>
+    <div class="meta">status: {{ clip.status }}</div>
+  </div>
 
-    <form action="/clip/{{ clip.id }}/trim" method="post" style="margin-top: 20px;">
-        <label>Start time (HH:MM:SS or seconds):
-            <input type="text" name="start" value="0" required>
-        </label>
-        <br><br>
-        <label>End time (HH:MM:SS or seconds):
-            <input type="text" name="end" required>
-        </label>
-        <br><br>
-        <button type="submit">Trim &amp; Save</button>
-    </form>
+  <div class="editor-layout">
+    <div class="player-wrap">
+      <video id="player" src="/media/{{ subdir }}/{{ clip.filename }}" controls></video>
+    </div>
 
-    <p style="margin-top: 20px;"><a href="/">&larr; Back to library</a></p>
+    <div class="panel">
+      <h2>Trim clip</h2>
+      <form action="/clip/{{ clip.id }}/trim" method="post">
+        <div class="field">
+          <label>Start</label>
+          <div class="timecode-input-row">
+            <input class="timecode-input" type="text" name="start" id="start" value="0" required>
+            <button type="button" class="btn-set" onclick="setCurrent('start')">SET</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>End</label>
+          <div class="timecode-input-row">
+            <input class="timecode-input" type="text" name="end" id="end" required>
+            <button type="button" class="btn-set" onclick="setCurrent('end')">SET</button>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Trim &amp; save</button>
+      </form>
 
-    <script>
-        const video = document.getElementById('player');
-        video.addEventListener('loadedmetadata', () => {
-            document.querySelector('input[name="end"]').value = video.duration.toFixed(2);
-        });
-    </script>
-</body>
-</html>
+      <hr class="divider">
+
+      <h2>Share</h2>
+      {% if clip.published %}
+      <div class="share-link-box" id="share-link">/c/{{ clip.slug }}</div>
+      <button class="btn btn-outline btn-block" onclick="copyShareLink()">Copy link</button>
+      {% else %}
+      <form action="/clip/{{ clip.id }}/publish" method="post">
+        <button type="submit" class="btn btn-primary btn-block">Publish</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+<script>
+const video = document.getElementById('player');
+video.addEventListener('loadedmetadata', () => {
+  const end = document.getElementById('end');
+  if (!end.value) end.value = video.duration.toFixed(2);
+});
+function setCurrent(field) {
+  document.getElementById(field).value = video.currentTime.toFixed(2);
+}
+const shareLink = document.getElementById('share-link');
+if (shareLink) shareLink.textContent = location.origin + shareLink.textContent;
+function copyShareLink() {
+  navigator.clipboard.writeText(shareLink.textContent);
+}
+</script>
+{% endblock %}

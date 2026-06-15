@@ -1,26 +1,87 @@
 import sqlite3
 import subprocess
-import uuid
+import secrets
 import os
+import re
+import uuid
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
-from fastapi.responses import RedirectResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException, Depends
+from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 
 DATA_DIR = Path("/data")
 RAW_DIR = DATA_DIR / "raw"
 EDITED_DIR = DATA_DIR / "edited"
 IMAGES_DIR = DATA_DIR / "images"
+THUMBNAIL_DIR = DATA_DIR / "thumbnails"
 DB_PATH = DATA_DIR / "clips.db"
 
-for d in (RAW_DIR, EDITED_DIR, IMAGES_DIR):
+for d in (RAW_DIR, EDITED_DIR, IMAGES_DIR, THUMBNAIL_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
-app.mount("/media", StaticFiles(directory=str(DATA_DIR)), name="media")
 
+security = HTTPBasic()
+ADMIN_USERNAME = os.environ.get("CLIPS_USERNAME", "admin")
+ADMIN_PASSWORD = os.environ.get("CLIPS_PASSWORD", "changeme")
+
+
+def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
+    ok_user = secrets.compare_digest(credentials.username, ADMIN_USERNAME)
+    ok_pass = secrets.compare_digest(credentials.password, ADMIN_PASSWORD)
+    if not (ok_user and ok_pass):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+
+# ---------- Helpers ----------
+
+def format_duration(seconds):
+    if not seconds:
+        return "--:--"
+    seconds = int(seconds)
+    m, s = divmod(seconds, 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+templates.env.filters["duration"] = format_duration
+
+
+def get_duration(path: Path) -> float:
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, check=True
+        )
+        return float(result.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def generate_thumbnail(video_path: Path) -> str:
+    thumb_name = f"{uuid.uuid4().hex}.jpg"
+    thumb_path = THUMBNAIL_DIR / thumb_name
+    subprocess.run(
+        ["ffmpeg", "-y", "-ss", "00:00:01", "-i", str(video_path),
+         "-frames:v", "1", "-vf", "scale=480:-1", str(thumb_path)],
+        capture_output=True
+    )
+    if thumb_path.exists() and thumb_path.stat().st_size > 0:
+        return thumb_name
+    return None
+
+
+# ---------- DB ----------
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -37,6 +98,8 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'raw',
             slug TEXT UNIQUE,
             published INTEGER DEFAULT 0,
+            thumbnail TEXT,
+            duration REAL DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -48,11 +111,82 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(clips)").fetchall()]
+    if "thumbnail" not in existing_cols:
+        conn.execute("ALTER TABLE clips ADD COLUMN thumbnail TEXT")
+    if "duration" not in existing_cols:
+        conn.execute("ALTER TABLE clips ADD COLUMN duration REAL DEFAULT 0")
+
     conn.commit()
     conn.close()
 
 
 init_db()
+
+
+# ---------- Media serving (range-request aware) ----------
+
+CHUNK_SIZE = 1024 * 1024
+
+
+def media_type_for(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext == ".mp4":
+        return "video/mp4"
+    if ext == ".png":
+        return "image/png"
+    if ext in (".jpg", ".jpeg"):
+        return "image/jpeg"
+    return "application/octet-stream"
+
+
+@app.get("/media/{subpath:path}")
+async def serve_media(request: Request, subpath: str):
+    file_path = DATA_DIR / subpath
+    if not file_path.is_file():
+        raise HTTPException(404, "File not found")
+
+    file_size = file_path.stat().st_size
+    range_header = request.headers.get("range")
+    media_type = media_type_for(file_path)
+
+    if range_header:
+        range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+        if range_match:
+            start = int(range_match.group(1))
+            end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
+            end = min(end, file_size - 1)
+            chunk_size = end - start + 1
+
+            def iterfile():
+                with open(file_path, "rb") as f:
+                    f.seek(start)
+                    remaining = chunk_size
+                    while remaining > 0:
+                        data = f.read(min(CHUNK_SIZE, remaining))
+                        if not data:
+                            break
+                        remaining -= len(data)
+                        yield data
+
+            headers = {
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(chunk_size),
+            }
+            return StreamingResponse(iterfile(), status_code=206, headers=headers, media_type=media_type)
+
+    def iterfile_full():
+        with open(file_path, "rb") as f:
+            while chunk := f.read(CHUNK_SIZE):
+                yield chunk
+
+    return StreamingResponse(
+        iterfile_full(),
+        headers={"Content-Length": str(file_size), "Accept-Ranges": "bytes"},
+        media_type=media_type,
+    )
 
 
 # ---------- Upload endpoints ----------
@@ -67,10 +201,13 @@ async def upload_video(file: UploadFile = File(...)):
         while chunk := await file.read(1024 * 1024):
             f.write(chunk)
 
+    duration = get_duration(dest)
+    thumbnail = generate_thumbnail(dest)
+
     conn = get_db()
     cur = conn.execute(
-        "INSERT INTO clips (filename, status) VALUES (?, 'raw')",
-        (new_name,)
+        "INSERT INTO clips (filename, status, thumbnail, duration) VALUES (?, 'raw', ?, ?)",
+        (new_name, thumbnail, duration)
     )
     conn.commit()
     clip_id = cur.lastrowid
@@ -91,10 +228,7 @@ async def upload_image(file: UploadFile = File(...)):
 
     slug = uuid.uuid4().hex[:8]
     conn = get_db()
-    conn.execute(
-        "INSERT INTO images (filename, slug) VALUES (?, ?)",
-        (new_name, slug)
-    )
+    conn.execute("INSERT INTO images (filename, slug) VALUES (?, ?)", (new_name, slug))
     conn.commit()
     conn.close()
 
@@ -104,29 +238,27 @@ async def upload_image(file: UploadFile = File(...)):
 # ---------- Library ----------
 
 @app.get("/")
-async def library(request: Request):
+async def library(request: Request, user: str = Depends(require_auth)):
     conn = get_db()
-    clips = conn.execute(
-        "SELECT * FROM clips ORDER BY created_at DESC"
-    ).fetchall()
+    clips = conn.execute("SELECT * FROM clips ORDER BY created_at DESC").fetchall()
+    images = conn.execute("SELECT * FROM images ORDER BY created_at DESC LIMIT 24").fetchall()
     conn.close()
     return templates.TemplateResponse(
-        request, "library.html", {"clips": clips}
+        request, "library.html", {"clips": clips, "images": images}
     )
 
 
 # ---------- Editor ----------
 
 @app.get("/clip/{clip_id}/edit")
-async def edit_page(request: Request, clip_id: int):
+async def edit_page(request: Request, clip_id: int, user: str = Depends(require_auth)):
     conn = get_db()
     clip = conn.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone()
     conn.close()
     if not clip:
         raise HTTPException(404, "Clip not found")
 
-    source = clip["filename"] if clip["status"] == "raw" else clip["filename"]
-    subdir = "raw" if clip["status"] != "edited" else "edited"
+    subdir = "edited" if clip["status"] == "edited" else "raw"
 
     return templates.TemplateResponse(
         request, "editor.html", {"clip": clip, "subdir": subdir}
@@ -134,7 +266,7 @@ async def edit_page(request: Request, clip_id: int):
 
 
 @app.post("/clip/{clip_id}/trim")
-async def trim_clip(clip_id: int, start: str = Form(...), end: str = Form(...)):
+async def trim_clip(clip_id: int, start: str = Form(...), end: str = Form(...), user: str = Depends(require_auth)):
     conn = get_db()
     clip = conn.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone()
     if not clip:
@@ -147,7 +279,6 @@ async def trim_clip(clip_id: int, start: str = Form(...), end: str = Form(...)):
     out_name = f"{uuid.uuid4().hex}.mp4"
     out_path = EDITED_DIR / out_name
 
-    # QSV-accelerated trim. -ss/-to placed after -i for accurate frame seeking.
     cmd = [
         "ffmpeg", "-y",
         "-hwaccel", "qsv", "-hwaccel_output_format", "qsv",
@@ -155,6 +286,7 @@ async def trim_clip(clip_id: int, start: str = Form(...), end: str = Form(...)):
         "-ss", start, "-to", end,
         "-c:v", "h264_qsv", "-global_quality", "20",
         "-c:a", "aac",
+        "-movflags", "+faststart",
         str(out_path)
     ]
 
@@ -163,9 +295,12 @@ async def trim_clip(clip_id: int, start: str = Form(...), end: str = Form(...)):
         conn.close()
         raise HTTPException(500, f"ffmpeg failed: {result.stderr[-500:]}")
 
+    duration = get_duration(out_path)
+    thumbnail = generate_thumbnail(out_path)
+
     conn.execute(
-        "UPDATE clips SET filename = ?, status = 'edited' WHERE id = ?",
-        (out_name, clip_id)
+        "UPDATE clips SET filename = ?, status = 'edited', thumbnail = ?, duration = ? WHERE id = ?",
+        (out_name, thumbnail, duration, clip_id)
     )
     conn.commit()
     conn.close()
@@ -176,7 +311,7 @@ async def trim_clip(clip_id: int, start: str = Form(...), end: str = Form(...)):
 # ---------- Publish / Share ----------
 
 @app.post("/clip/{clip_id}/publish")
-async def publish_clip(clip_id: int):
+async def publish_clip(clip_id: int, user: str = Depends(require_auth)):
     conn = get_db()
     clip = conn.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone()
     if not clip:
@@ -184,14 +319,11 @@ async def publish_clip(clip_id: int):
         raise HTTPException(404, "Clip not found")
 
     slug = clip["slug"] or uuid.uuid4().hex[:8]
-    conn.execute(
-        "UPDATE clips SET slug = ?, published = 1 WHERE id = ?",
-        (slug, clip_id)
-    )
+    conn.execute("UPDATE clips SET slug = ?, published = 1 WHERE id = ?", (slug, clip_id))
     conn.commit()
     conn.close()
 
-    return RedirectResponse(url=f"/c/{slug}", status_code=303)
+    return RedirectResponse(url=f"/clip/{clip_id}/edit", status_code=303)
 
 
 @app.get("/c/{slug}")
