@@ -7,8 +7,8 @@ import uuid
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException, Depends
 from fastapi.responses import RedirectResponse, StreamingResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
 DATA_DIR = Path("/data")
 RAW_DIR = DATA_DIR / "raw"
@@ -23,21 +23,26 @@ for d in (RAW_DIR, EDITED_DIR, IMAGES_DIR, THUMBNAIL_DIR):
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 
-security = HTTPBasic()
+SESSION_SECRET = os.environ.get("SESSION_SECRET", "dev-secret-change-me")
 ADMIN_USERNAME = os.environ.get("CLIPS_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("CLIPS_PASSWORD", "changeme")
 
+app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET)
 
-def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
-    ok_user = secrets.compare_digest(credentials.username, ADMIN_USERNAME)
-    ok_pass = secrets.compare_digest(credentials.password, ADMIN_PASSWORD)
-    if not (ok_user and ok_pass):
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return credentials.username
+
+class AuthRedirect(Exception):
+    pass
+
+
+@app.exception_handler(AuthRedirect)
+async def auth_redirect_handler(request: Request, exc: AuthRedirect):
+    return RedirectResponse(url="/login")
+
+
+def require_auth(request: Request):
+    if not request.session.get("authenticated"):
+        raise AuthRedirect()
+    return True
 
 
 # ---------- Helpers ----------
@@ -68,7 +73,7 @@ def get_duration(path: Path) -> float:
         return 0.0
 
 
-def generate_thumbnail(video_path: Path) -> str:
+def generate_thumbnail(video_path: Path):
     thumb_name = f"{uuid.uuid4().hex}.jpg"
     thumb_path = THUMBNAIL_DIR / thumb_name
     subprocess.run(
@@ -122,7 +127,30 @@ def init_db():
     conn.close()
 
 
+def backfill_metadata():
+    """Fill in thumbnail/duration for clips uploaded before these columns existed."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM clips WHERE thumbnail IS NULL OR duration IS NULL OR duration = 0"
+    ).fetchall()
+    for row in rows:
+        subdir = "edited" if row["status"] == "edited" else "raw"
+        base_dir = EDITED_DIR if subdir == "edited" else RAW_DIR
+        path = base_dir / row["filename"]
+        if not path.exists():
+            continue
+        duration = get_duration(path)
+        thumbnail = row["thumbnail"] or generate_thumbnail(path)
+        conn.execute(
+            "UPDATE clips SET duration = ?, thumbnail = ? WHERE id = ?",
+            (duration, thumbnail, row["id"])
+        )
+    conn.commit()
+    conn.close()
+
+
 init_db()
+backfill_metadata()
 
 
 # ---------- Media serving (range-request aware) ----------
@@ -189,6 +217,31 @@ async def serve_media(request: Request, subpath: str):
     )
 
 
+# ---------- Auth ----------
+
+@app.get("/login")
+async def login_page(request: Request):
+    if request.session.get("authenticated"):
+        return RedirectResponse(url="/")
+    return templates.TemplateResponse(request, "login.html", {"error": None})
+
+
+@app.post("/login")
+async def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
+    if secrets.compare_digest(username, ADMIN_USERNAME) and secrets.compare_digest(password, ADMIN_PASSWORD):
+        request.session["authenticated"] = True
+        return RedirectResponse(url="/", status_code=303)
+    return templates.TemplateResponse(
+        request, "login.html", {"error": "Incorrect username or password."}, status_code=401
+    )
+
+
+@app.get("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/login", status_code=303)
+
+
 # ---------- Upload endpoints ----------
 
 @app.post("/upload")
@@ -238,7 +291,7 @@ async def upload_image(file: UploadFile = File(...)):
 # ---------- Library ----------
 
 @app.get("/")
-async def library(request: Request, user: str = Depends(require_auth)):
+async def library(request: Request, user: bool = Depends(require_auth)):
     conn = get_db()
     clips = conn.execute("SELECT * FROM clips ORDER BY created_at DESC").fetchall()
     images = conn.execute("SELECT * FROM images ORDER BY created_at DESC LIMIT 24").fetchall()
@@ -251,7 +304,7 @@ async def library(request: Request, user: str = Depends(require_auth)):
 # ---------- Editor ----------
 
 @app.get("/clip/{clip_id}/edit")
-async def edit_page(request: Request, clip_id: int, user: str = Depends(require_auth)):
+async def edit_page(request: Request, clip_id: int, user: bool = Depends(require_auth)):
     conn = get_db()
     clip = conn.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone()
     conn.close()
@@ -266,7 +319,7 @@ async def edit_page(request: Request, clip_id: int, user: str = Depends(require_
 
 
 @app.post("/clip/{clip_id}/trim")
-async def trim_clip(clip_id: int, start: str = Form(...), end: str = Form(...), user: str = Depends(require_auth)):
+async def trim_clip(clip_id: int, start: str = Form(...), end: str = Form(...), user: bool = Depends(require_auth)):
     conn = get_db()
     clip = conn.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone()
     if not clip:
@@ -311,7 +364,7 @@ async def trim_clip(clip_id: int, start: str = Form(...), end: str = Form(...), 
 # ---------- Publish / Share ----------
 
 @app.post("/clip/{clip_id}/publish")
-async def publish_clip(clip_id: int, user: str = Depends(require_auth)):
+async def publish_clip(clip_id: int, user: bool = Depends(require_auth)):
     conn = get_db()
     clip = conn.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone()
     if not clip:

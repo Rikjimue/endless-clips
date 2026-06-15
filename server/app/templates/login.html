@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Sign in — Endless Clips{% endblock %}
+{% block body %}
+<div class="share-shell">
+  <div class="login-card">
+    <div class="wordmark"><span class="dot"></span> Endless Clips</div>
+    <form method="post" action="/login">
+      {% if error %}<div class="login-error">{{ error }}</div>{% endif %}
+      <div class="field">
+        <label>Username</label>
+        <input class="input" type="text" name="username" autofocus required>
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input class="input" type="password" name="password" required>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block">Sign in</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

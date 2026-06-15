@@ -4,12 +4,19 @@
 <div class="shell">
   <div class="page-header">
     <div class="wordmark"><span class="dot"></span> Endless Clips</div>
-    <div class="meta">{{ clips|length }} clip{{ 's' if clips|length != 1 else '' }}</div>
+    <div class="header-actions">
+      <span class="meta">{{ clips|length }} clip{{ 's' if clips|length != 1 else '' }}</span>
+      <a href="/logout" class="btn btn-outline btn-sm">Sign out</a>
+    </div>
   </div>
 
-  {% if clips %}
+  {% set drafts = clips | rejectattr('published') | list %}
+  {% set published = clips | selectattr('published') | list %}
+
+  <div class="section-title">Drafts</div>
+  {% if drafts %}
   <div class="grid">
-    {% for clip in clips %}
+    {% for clip in drafts %}
     <div class="card">
       <div class="thumb">
         {% if clip.thumbnail %}
@@ -25,20 +32,45 @@
         <div class="card-meta">{{ clip.created_at }}</div>
         <div class="card-actions">
           <a href="/clip/{{ clip.id }}/edit" class="btn btn-outline">Edit</a>
-          {% if clip.published %}
-          <a href="/c/{{ clip.slug }}" class="btn btn-primary" target="_blank">View link</a>
-          {% else %}
           <form action="/clip/{{ clip.id }}/publish" method="post">
             <button type="submit" class="btn btn-primary">Publish</button>
           </form>
-          {% endif %}
         </div>
       </div>
     </div>
     {% endfor %}
   </div>
   {% else %}
-  <div class="empty">No clips yet. Clips you record will appear here once uploaded.</div>
+  <div class="empty">No drafts. New clips land here as soon as they're uploaded.</div>
+  {% endif %}
+
+  <div class="section-title">Published</div>
+  {% if published %}
+  <div class="grid">
+    {% for clip in published %}
+    <div class="card">
+      <div class="thumb">
+        {% if clip.thumbnail %}
+        <img src="/media/thumbnails/{{ clip.thumbnail }}" alt="">
+        {% else %}
+        <div class="thumb-placeholder">▶</div>
+        {% endif %}
+        <span class="status-pill status-{{ clip.status }}">{{ clip.status }}</span>
+        <span class="timecode duration-badge">{{ clip.duration | duration }}</span>
+      </div>
+      <div class="card-body">
+        <div class="card-title">{{ clip.filename }}</div>
+        <div class="card-meta">{{ clip.created_at }}</div>
+        <div class="card-actions">
+          <a href="/clip/{{ clip.id }}/edit" class="btn btn-outline">Edit</a>
+          <a href="/c/{{ clip.slug }}" class="btn btn-primary" target="_blank">View link</a>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">Nothing published yet.</div>
   {% endif %}
 
   {% if images %}

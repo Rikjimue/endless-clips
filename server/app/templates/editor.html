@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Edit — {{ clip.filename }}{% endblock %}
+{% block head_extra %}
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
+{% endblock %}
 {% block body %}
 <div class="shell">
   <a href="/" class="back-link">&larr; Library</a>
@@ -9,32 +12,32 @@
   </div>
 
   <div class="editor-layout">
-    <div class="player-wrap">
-      <video id="player" src="/media/{{ subdir }}/{{ clip.filename }}" controls></video>
+    <div class="main-col">
+      <div class="player-wrap">
+        <video id="player" playsinline controls>
+          <source src="/media/{{ subdir }}/{{ clip.filename }}" type="video/mp4">
+        </video>
+      </div>
+
+      <div class="trim-times">
+        <span class="timecode" id="start-display">0:00.00</span>
+        <span class="timecode" id="end-display">0:00.00</span>
+      </div>
+      <div class="trim-timeline" id="timeline">
+        <div class="trim-selection" id="trim-selection"></div>
+        <div class="trim-playhead" id="playhead"></div>
+        <div class="trim-handle" id="handle-start"></div>
+        <div class="trim-handle" id="handle-end"></div>
+      </div>
+
+      <form action="/clip/{{ clip.id }}/trim" method="post" id="trim-form">
+        <input type="hidden" name="start" id="start" value="0">
+        <input type="hidden" name="end" id="end" value="0">
+        <button type="submit" class="btn btn-primary btn-block">Trim &amp; save</button>
+      </form>
     </div>
 
     <div class="panel">
-      <h2>Trim clip</h2>
-      <form action="/clip/{{ clip.id }}/trim" method="post">
-        <div class="field">
-          <label>Start</label>
-          <div class="timecode-input-row">
-            <input class="timecode-input" type="text" name="start" id="start" value="0" required>
-            <button type="button" class="btn-set" onclick="setCurrent('start')">SET</button>
-          </div>
-        </div>
-        <div class="field">
-          <label>End</label>
-          <div class="timecode-input-row">
-            <input class="timecode-input" type="text" name="end" id="end" required>
-            <button type="button" class="btn-set" onclick="setCurrent('end')">SET</button>
-          </div>
-        </div>
-        <button type="submit" class="btn btn-primary btn-block">Trim &amp; save</button>
-      </form>
-
-      <hr class="divider">
-
       <h2>Share</h2>
       {% if clip.published %}
       <div class="share-link-box" id="share-link">/c/{{ clip.slug }}</div>
@@ -47,15 +50,96 @@
     </div>
   </div>
 </div>
+
+<script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
 <script>
-const video = document.getElementById('player');
-video.addEventListener('loadedmetadata', () => {
-  const end = document.getElementById('end');
-  if (!end.value) end.value = video.duration.toFixed(2);
-});
-function setCurrent(field) {
-  document.getElementById(field).value = video.currentTime.toFixed(2);
+const player = new Plyr('#player');
+
+const timeline = document.getElementById('timeline');
+const selection = document.getElementById('trim-selection');
+const handleStart = document.getElementById('handle-start');
+const handleEnd = document.getElementById('handle-end');
+const playhead = document.getElementById('playhead');
+const startInput = document.getElementById('start');
+const endInput = document.getElementById('end');
+const startDisplay = document.getElementById('start-display');
+const endDisplay = document.getElementById('end-display');
+
+let duration = 0;
+let startTime = 0;
+let endTime = 0;
+
+function formatTime(t) {
+  const m = Math.floor(t / 60);
+  const s = (t % 60).toFixed(2).padStart(5, '0');
+  return `${m}:${s}`;
 }
+
+function updateUI() {
+  const startPct = (startTime / duration) * 100;
+  const endPct = (endTime / duration) * 100;
+  handleStart.style.left = startPct + '%';
+  handleEnd.style.left = endPct + '%';
+  selection.style.left = startPct + '%';
+  selection.style.width = (endPct - startPct) + '%';
+  startInput.value = startTime.toFixed(2);
+  endInput.value = endTime.toFixed(2);
+  startDisplay.textContent = formatTime(startTime);
+  endDisplay.textContent = formatTime(endTime);
+}
+
+player.on('loadedmetadata', () => {
+  duration = player.duration;
+  startTime = 0;
+  endTime = duration;
+  updateUI();
+});
+
+player.on('timeupdate', () => {
+  if (duration) {
+    playhead.style.left = (player.currentTime / duration * 100) + '%';
+  }
+});
+
+function setupDrag(handle, isStart) {
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      const rect = timeline.getBoundingClientRect();
+      let pct = (ev.clientX - rect.left) / rect.width;
+      pct = Math.min(Math.max(pct, 0), 1);
+      let time = pct * duration;
+      if (isStart) {
+        time = Math.min(Math.max(time, 0), endTime - 0.1);
+        startTime = time;
+      } else {
+        time = Math.max(Math.min(time, duration), startTime + 0.1);
+        endTime = time;
+      }
+      player.currentTime = time;
+      updateUI();
+    };
+    const up = () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+  });
+}
+setupDrag(handleStart, true);
+setupDrag(handleEnd, false);
+
+// click on track (not a handle) seeks the playhead for previewing
+timeline.addEventListener('pointerdown', (e) => {
+  if (e.target === handleStart || e.target === handleEnd) return;
+  const rect = timeline.getBoundingClientRect();
+  let pct = (e.clientX - rect.left) / rect.width;
+  pct = Math.min(Math.max(pct, 0), 1);
+  player.currentTime = pct * duration;
+});
+
 const shareLink = document.getElementById('share-link');
 if (shareLink) shareLink.textContent = location.origin + shareLink.textContent;
 function copyShareLink() {
