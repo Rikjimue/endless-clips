@@ -2,6 +2,13 @@
 {% block title %}Edit — {{ clip.display_name or clip.filename }}{% endblock %}
 {% block head_extra %}
 <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
+<style>
+  .trim-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .trim-controls .spacer { flex: 1; }
+  .kbd-hint { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--text-dim); }
+  .kbd { border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; background: var(--surface-2); }
+  .danger-zone { margin-top: 16px; }
+</style>
 {% endblock %}
 {% block body %}
 {% include "_nav.html" %}
@@ -35,11 +42,22 @@
         <div class="trim-handle" id="handle-end"></div>
       </div>
 
+      <div class="trim-controls">
+        <button type="button" class="btn btn-outline btn-sm" id="set-start">Set start ⟦I⟧</button>
+        <button type="button" class="btn btn-outline btn-sm" id="set-end">Set end ⟧O⟧</button>
+        <button type="button" class="btn btn-outline btn-sm" id="preview">Preview ⟦↵⟧</button>
+        <span class="spacer"></span>
+        <span class="kbd-hint">Selection: <span id="sel-len">0:00.00</span></span>
+      </div>
+
       <form action="/clip/{{ clip.id }}/trim" method="post" id="trim-form">
         <input type="hidden" name="start" id="start" value="0">
         <input type="hidden" name="end" id="end" value="0">
         <button type="submit" class="btn btn-primary btn-block">Trim &amp; save</button>
       </form>
+      <div class="kbd-hint" style="margin-top:8px;">
+        <span class="kbd">Space</span> play/pause &nbsp; <span class="kbd">I</span>/<span class="kbd">O</span> set in/out &nbsp; <span class="kbd">←</span>/<span class="kbd">→</span> nudge 1f
+      </div>
     </div>
 
     <div>
@@ -49,11 +67,21 @@
         <div class="share-link-box" id="share-link">/c/{{ clip.slug }}</div>
         <button class="btn btn-outline btn-block" onclick="copyToClipboard(shareLinkFull)">Copy link</button>
         <a href="/c/{{ clip.slug }}" class="btn btn-primary btn-block" target="_blank" rel="noopener" style="margin-top:8px;">Open in new tab</a>
+        <form action="/clip/{{ clip.id }}/unpublish" method="post" style="margin-top:8px;">
+          <button type="submit" class="btn btn-outline btn-block">Unpublish</button>
+        </form>
         {% else %}
         <form action="/clip/{{ clip.id }}/publish" method="post">
           <button type="submit" class="btn btn-primary btn-block">Publish</button>
         </form>
         {% endif %}
+      </div>
+
+      <div class="panel danger-zone">
+        <h2>Danger zone</h2>
+        <form action="/clip/{{ clip.id }}/delete" method="post" onsubmit="return confirm('Delete this clip and its files? This cannot be undone.')">
+          <button type="submit" class="btn btn-danger btn-block">Delete clip</button>
+        </form>
       </div>
     </div>
   </div>
@@ -62,7 +90,8 @@
 <script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
 <script>
 const player = new Plyr('#player', {
-  controls: ['play-large', 'play', 'current-time', 'mute', 'volume', 'settings', 'fullscreen']
+  controls: ['play-large', 'play', 'current-time', 'mute', 'volume', 'settings', 'fullscreen'],
+  keyboard: { focused: false, global: false }
 });
 
 const timeline = document.getElementById('timeline');
@@ -75,12 +104,14 @@ const startInput = document.getElementById('start');
 const endInput = document.getElementById('end');
 const startDisplay = document.getElementById('start-display');
 const endDisplay = document.getElementById('end-display');
+const selLen = document.getElementById('sel-len');
 
 let duration = 0;
 let startTime = 0;
 let endTime = 0;
 let pendingSeek = null;
 let seekScheduled = false;
+let previewing = false;
 
 function formatTime(t) {
   const m = Math.floor(t / 60);
@@ -99,6 +130,7 @@ function updateUI() {
   endInput.value = endTime.toFixed(2);
   startDisplay.textContent = formatTime(startTime);
   endDisplay.textContent = formatTime(endTime);
+  selLen.textContent = formatTime(Math.max(0, endTime - startTime));
 }
 
 function updateBuffered() {
@@ -125,12 +157,13 @@ player.on('loadedmetadata', () => {
   endTime = duration;
   updateUI();
 });
-
 player.on('progress', updateBuffered);
-
 player.on('timeupdate', () => {
-  if (duration) {
-    playhead.style.left = (player.currentTime / duration * 100) + '%';
+  if (duration) playhead.style.left = (player.currentTime / duration * 100) + '%';
+  // Stop the loop-preview cleanly at the out-point.
+  if (previewing && player.currentTime >= endTime) {
+    player.pause();
+    previewing = false;
   }
 });
 
@@ -140,16 +173,10 @@ function setupDrag(handle, isStart) {
     handle.setPointerCapture(e.pointerId);
     const move = (ev) => {
       const rect = timeline.getBoundingClientRect();
-      let pct = (ev.clientX - rect.left) / rect.width;
-      pct = Math.min(Math.max(pct, 0), 1);
+      let pct = Math.min(Math.max((ev.clientX - rect.left) / rect.width, 0), 1);
       let time = pct * duration;
-      if (isStart) {
-        time = Math.min(Math.max(time, 0), endTime - 0.1);
-        startTime = time;
-      } else {
-        time = Math.max(Math.min(time, duration), startTime + 0.1);
-        endTime = time;
-      }
+      if (isStart) { time = Math.min(Math.max(time, 0), endTime - 0.1); startTime = time; }
+      else { time = Math.max(Math.min(time, duration), startTime + 0.1); endTime = time; }
       scheduleSeek(time);
       updateUI();
     };
@@ -167,9 +194,43 @@ setupDrag(handleEnd, false);
 timeline.addEventListener('pointerdown', (e) => {
   if (e.target === handleStart || e.target === handleEnd) return;
   const rect = timeline.getBoundingClientRect();
-  let pct = (e.clientX - rect.left) / rect.width;
-  pct = Math.min(Math.max(pct, 0), 1);
+  let pct = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1);
   scheduleSeek(pct * duration);
+});
+
+/* ---- Playhead-based in/out (much easier than dragging) ---- */
+function setStart() {
+  startTime = Math.min(player.currentTime, endTime - 0.05);
+  startTime = Math.max(0, startTime);
+  updateUI();
+}
+function setEnd() {
+  endTime = Math.max(player.currentTime, startTime + 0.05);
+  endTime = Math.min(duration, endTime);
+  updateUI();
+}
+function previewSelection() {
+  player.currentTime = startTime;
+  previewing = true;
+  player.play();
+}
+document.getElementById('set-start').onclick = setStart;
+document.getElementById('set-end').onclick = setEnd;
+document.getElementById('preview').onclick = previewSelection;
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const k = e.key.toLowerCase();
+  if (k === ' ') { e.preventDefault(); player.togglePlay(); }
+  else if (k === 'i') { e.preventDefault(); setStart(); }
+  else if (k === 'o') { e.preventDefault(); setEnd(); }
+  else if (e.key === 'Enter') { e.preventDefault(); previewSelection(); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); player.currentTime = Math.max(0, player.currentTime - 1 / 60); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); player.currentTime = Math.min(duration, player.currentTime + 1 / 60); }
+});
+
+document.getElementById('trim-form').addEventListener('submit', (e) => {
+  if (endTime - startTime < 0.05) { e.preventDefault(); showToast('Selection is empty'); }
 });
 
 const shareLinkEl = document.getElementById('share-link');
@@ -188,13 +249,10 @@ function startTitleEdit() {
   wrap.innerHTML = `
     <input class="input" id="title-input" value="${current.replace(/"/g, '&quot;')}">
     <button class="btn btn-primary btn-sm" id="title-save">Save</button>
-    <button class="btn btn-outline btn-sm" id="title-cancel">Cancel</button>
-  `;
+    <button class="btn btn-outline btn-sm" id="title-cancel">Cancel</button>`;
   h1.replaceWith(wrap);
   const input = wrap.querySelector('#title-input');
-  input.focus();
-  input.select();
-
+  input.focus(); input.select();
   function finish(newName) {
     const newH1 = document.createElement('h1');
     newH1.className = 'editable';
@@ -203,21 +261,14 @@ function startTitleEdit() {
     newH1.onclick = startTitleEdit;
     wrap.replaceWith(newH1);
   }
-
   wrap.querySelector('#title-cancel').onclick = () => finish(current);
   async function save() {
     const name = input.value.trim();
     const formData = new FormData();
     formData.append('name', name);
     const res = await fetch('/clip/{{ clip.id }}/rename', { method: 'POST', body: formData });
-    if (res.ok) {
-      const data = await res.json();
-      finish(data.name || '{{ clip.filename }}');
-      showToast('Renamed');
-    } else {
-      finish(current);
-      showToast('Rename failed');
-    }
+    if (res.ok) { const data = await res.json(); finish(data.name || '{{ clip.filename }}'); showToast('Renamed'); }
+    else { finish(current); showToast('Rename failed'); }
   }
   wrap.querySelector('#title-save').onclick = save;
   input.addEventListener('keydown', (e) => {

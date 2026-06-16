@@ -1,120 +1,235 @@
+import os
 import time
 import subprocess
-import requests
-import pyperclip
 from pathlib import Path
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-# --- Config ---
-VIDEO_FOLDER = r"C:\Users\rikji\Videos\Endless Clips"
-SCREENSHOT_FOLDER = r"C:\Users\rikji\Pictures\Endless Clips"
-FFMPEG_PATH = r"C:\Users\rikji\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.1-full_build\bin\ffmpeg.exe"
+try:
+    import pyperclip
+except Exception:  # clipboard is optional (e.g. headless)
+    pyperclip = None
 
-VIDEO_UPLOAD_URL = "http://192.168.1.248:8000/upload"
-IMAGE_UPLOAD_URL = "http://192.168.1.248:8000/upload-image"
+# ------------------------------------------------------------------ Config ---
+# All values can be overridden with environment variables.
+VIDEO_FOLDER = os.environ.get("CLIPS_VIDEO_FOLDER", r"C:\Users\rikji\Videos\Endless Clips")
+SCREENSHOT_FOLDER = os.environ.get("CLIPS_SCREENSHOT_FOLDER", r"C:\Users\rikji\Pictures\Endless Clips")
+FFMPEG_PATH = os.environ.get(
+    "CLIPS_FFMPEG_PATH",
+    r"C:\Users\rikji\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.1-full_build\bin\ffmpeg.exe",
+)
 
-REMUX_TO_MP4 = True
-VIDEO_EXTS = (".mp4", ".mkv", ".flv")
-IMAGE_EXTS = (".png", ".jpg", ".jpeg")
+SERVER = os.environ.get("CLIPS_SERVER", "http://192.168.1.248:8000")
+VIDEO_UPLOAD_URL = f"{SERVER}/upload"
+IMAGE_UPLOAD_URL = f"{SERVER}/upload-image"
+
+REMUX_TO_MP4 = os.environ.get("CLIPS_REMUX", "1") == "1"
+# Delete local files once the server confirms the upload. This is the behaviour
+# that was previously broken/leaky.
+DELETE_AFTER_UPLOAD = os.environ.get("CLIPS_DELETE_AFTER_UPLOAD", "1") == "1"
+PROCESS_EXISTING_ON_START = os.environ.get("CLIPS_PROCESS_EXISTING", "0") == "1"
+
+VIDEO_EXTS = (".mp4", ".mkv", ".flv", ".mov", ".webm", ".avi")
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+
+# ------------------------------------------------------------- HTTP session ---
+session = requests.Session()
+session.mount("http://", HTTPAdapter(max_retries=Retry(
+    total=4, backoff_factor=1.5, status_forcelist=[500, 502, 503, 504],
+    allowed_methods=["POST"])))
+
+# In-flight dedupe so a create + modify event for the same file is processed once.
+_seen = {}
 
 
-def wait_until_stable(path: Path, checks=3, interval=0.5):
+def log(msg):
+    print(time.strftime("[%H:%M:%S] ") + msg, flush=True)
+
+
+def wait_until_stable(path: Path, checks=3, interval=0.5, timeout=120):
+    """Wait until the file size stops changing AND the file is openable.
+
+    The 'openable' check matters on Windows, where the recorder may still hold
+    an exclusive lock briefly after it finishes writing.
+    """
     last_size = -1
-    stable_count = 0
-    while stable_count < checks:
+    stable = 0
+    deadline = time.time() + timeout
+    while time.time() < deadline:
         if not path.exists():
             time.sleep(interval)
             continue
         size = path.stat().st_size
-        if size == last_size:
-            stable_count += 1
+        if size == last_size and size > 0:
+            stable += 1
+            if stable >= checks and _is_unlocked(path):
+                return True
         else:
-            stable_count = 0
+            stable = 0
         last_size = size
         time.sleep(interval)
+    return path.exists()
+
+
+def _is_unlocked(path: Path) -> bool:
+    try:
+        with open(path, "rb"):
+            return True
+    except (PermissionError, OSError):
+        return False
+
+
+def safe_delete(path: Path, attempts=12, delay=0.5) -> bool:
+    """Delete with retries — Windows often keeps a handle open for a moment."""
+    for _ in range(attempts):
+        try:
+            path.unlink()
+            return True
+        except FileNotFoundError:
+            return True
+        except (PermissionError, OSError):
+            time.sleep(delay)
+    log(f"Could not delete {path.name} (still locked)")
+    return False
 
 
 def remux_to_mp4(path: Path) -> Path:
-    if path.suffix.lower() == ".mp4":
-        return path
     out_path = path.with_suffix(".mp4")
+    if out_path.exists() and out_path != path:
+        out_path = path.with_name(f"{path.stem}_remux.mp4")
     cmd = [
-    FFMPEG_PATH, "-y", "-i", str(path),
-    "-c", "copy", "-movflags", "+faststart",
-    str(out_path)
+        FFMPEG_PATH, "-y", "-i", str(path),
+        "-c", "copy", "-movflags", "+faststart",
+        str(out_path),
     ]
     subprocess.run(cmd, check=True, capture_output=True)
     return out_path
 
 
-def upload_video(path: Path):
-    with open(path, "rb") as f:
-        files = {"file": (path.name, f, "video/mp4")}
-        resp = requests.post(VIDEO_UPLOAD_URL, files=files)
-    resp.raise_for_status()
-    print(f"Uploaded video {path.name}: {resp.status_code}")
+def upload_video(path: Path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            files = {"file": (path.name, f, "video/mp4")}
+            resp = session.post(VIDEO_UPLOAD_URL, files=files, timeout=600)
+        resp.raise_for_status()
+        log(f"Uploaded video {path.name} ({resp.status_code})")
+        return True
+    except Exception as e:
+        log(f"Video upload failed for {path.name}: {e}")
+        return False
 
 
 def upload_image(path: Path):
-    with open(path, "rb") as f:
-        mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
-        files = {"file": (path.name, f, mime)}
-        resp = requests.post(IMAGE_UPLOAD_URL, files=files)
-    resp.raise_for_status()
+    try:
+        with open(path, "rb") as f:
+            mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+            files = {"file": (path.name, f, mime)}
+            resp = session.post(IMAGE_UPLOAD_URL, files=files, timeout=120)
+        resp.raise_for_status()
+        link = resp.json().get("url")
+        if link:
+            full = link if link.startswith("http") else f"{SERVER}{link}"
+            if pyperclip:
+                try:
+                    pyperclip.copy(full)
+                except Exception:
+                    pass
+            log(f"Uploaded image {path.name}, link: {full}")
+        return True
+    except Exception as e:
+        log(f"Image upload failed for {path.name}: {e}")
+        return False
 
-    data = resp.json()
-    link = data.get("url")  # adjust key to match your API's response
 
-    if link:
-        pyperclip.copy(link)
-        print(f"Uploaded image {path.name}, link copied: {link}")
-    else:
-        print(f"Uploaded image {path.name}, but no URL returned: {data}")
+def process_video(path: Path):
+    if not wait_until_stable(path):
+        log(f"Gave up waiting for {path.name} to finish writing")
+        return
+
+    upload_path = path
+    remuxed = None
+    if REMUX_TO_MP4 and path.suffix.lower() != ".mp4":
+        try:
+            remuxed = remux_to_mp4(path)
+            upload_path = remuxed
+        except subprocess.CalledProcessError as e:
+            log(f"Remux failed for {path.name}, uploading original: {e}")
+            upload_path = path
+
+    ok = upload_video(upload_path)
+
+    # Only delete after a confirmed upload, so a failed upload never loses data.
+    if ok and DELETE_AFTER_UPLOAD:
+        safe_delete(path)
+        if remuxed is not None and remuxed != path:
+            safe_delete(remuxed)
+    elif not ok and remuxed is not None and remuxed != path:
+        # Upload failed: clean up our temp remux but keep the user's original.
+        safe_delete(remuxed)
+
+
+def process_image(path: Path):
+    if not wait_until_stable(path):
+        log(f"Gave up waiting for {path.name} to finish writing")
+        return
+    if upload_image(path) and DELETE_AFTER_UPLOAD:
+        safe_delete(path)
+
+
+def dispatch(path: Path):
+    # Dedupe: skip if we just handled this exact path+mtime.
+    try:
+        key = (str(path), path.stat().st_mtime_ns)
+    except OSError:
+        return
+    now = time.time()
+    if _seen.get(str(path)) == key and now - _seen.get("_t_" + str(path), 0) < 5:
+        return
+    _seen[str(path)] = key
+    _seen["_t_" + str(path)] = now
+
+    ext = path.suffix.lower()
+    try:
+        if ext in VIDEO_EXTS:
+            log(f"New video: {path.name}")
+            process_video(path)
+        elif ext in IMAGE_EXTS:
+            log(f"New screenshot: {path.name}")
+            process_image(path)
+    except Exception as e:
+        log(f"Error processing {path.name}: {e}")
 
 
 class ClipHandler(FileSystemEventHandler):
     def on_created(self, event):
-        if event.is_directory:
-            return
+        if not event.is_directory:
+            dispatch(Path(event.src_path))
 
-        path = Path(event.src_path)
-        ext = path.suffix.lower()
 
-        try:
-            if ext in VIDEO_EXTS:
-                print(f"New video: {path.name}")
-                wait_until_stable(path)
-
-                if REMUX_TO_MP4:
-                    final_path = remux_to_mp4(path)
-                    if final_path != path:
-                        path.unlink()
-                else:
-                    final_path = path
-
-                upload_video(final_path)
-
-            elif ext in IMAGE_EXTS:
-                print(f"New screenshot: {path.name}")
-                wait_until_stable(path)
-                upload_image(path)
-
-        except Exception as e:
-            print(f"Error processing {path.name}: {e}")
+def process_existing():
+    for folder, exts in ((VIDEO_FOLDER, VIDEO_EXTS), (SCREENSHOT_FOLDER, IMAGE_EXTS)):
+        for p in Path(folder).iterdir():
+            if p.is_file() and p.suffix.lower() in exts:
+                dispatch(p)
 
 
 if __name__ == "__main__":
     Path(VIDEO_FOLDER).mkdir(parents=True, exist_ok=True)
     Path(SCREENSHOT_FOLDER).mkdir(parents=True, exist_ok=True)
 
+    if PROCESS_EXISTING_ON_START:
+        process_existing()
+
     handler = ClipHandler()
     observer = Observer()
     observer.schedule(handler, VIDEO_FOLDER, recursive=False)
     observer.schedule(handler, SCREENSHOT_FOLDER, recursive=False)
     observer.start()
-
-    print(f"Watching {VIDEO_FOLDER} and {SCREENSHOT_FOLDER}...")
+    log(f"Watching {VIDEO_FOLDER} and {SCREENSHOT_FOLDER} -> {SERVER}")
     try:
         while True:
             time.sleep(1)
