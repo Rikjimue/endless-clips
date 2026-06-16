@@ -4,9 +4,10 @@ import secrets
 import os
 import re
 import uuid
+import urllib.parse
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException, Depends
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -47,6 +48,10 @@ def require_auth(request: Request):
     if not request.session.get("authenticated"):
         raise AuthRedirect()
     return True
+
+
+def is_authenticated(request: Request) -> bool:
+    return bool(request.session.get("authenticated"))
 
 
 # ---------- Helpers ----------
@@ -110,6 +115,17 @@ def media_type_for(path: Path) -> str:
     return types.get(ext, "application/octet-stream")
 
 
+def find_source_path(filename: str):
+    """Locate a clip's source file in raw or edited dirs, returning (path, subdir)."""
+    p = RAW_DIR / filename
+    if p.exists():
+        return p, "raw"
+    p = EDITED_DIR / filename
+    if p.exists():
+        return p, "edited"
+    return None, None
+
+
 # ---------- DB ----------
 
 def get_db():
@@ -124,6 +140,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS clips (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             filename TEXT NOT NULL,
+            source_filename TEXT,
             display_name TEXT,
             status TEXT NOT NULL DEFAULT 'raw',
             slug TEXT UNIQUE,
@@ -161,6 +178,12 @@ def init_db():
         conn.execute("ALTER TABLE clips ADD COLUMN duration REAL DEFAULT 0")
     if "display_name" not in existing_cols:
         conn.execute("ALTER TABLE clips ADD COLUMN display_name TEXT")
+    if "source_filename" not in existing_cols:
+        conn.execute("ALTER TABLE clips ADD COLUMN source_filename TEXT")
+        # Backfill: best guess is the current filename (covers clips never trimmed;
+        # for already-edited clips this points at the edited file, which is still
+        # better than nothing).
+        conn.execute("UPDATE clips SET source_filename = filename WHERE source_filename IS NULL")
 
     conn.commit()
     conn.close()
@@ -249,24 +272,24 @@ async def serve_media(request: Request, subpath: str):
 @app.get("/login")
 async def login_page(request: Request):
     if request.session.get("authenticated"):
-        return RedirectResponse(url="/")
-    return templates.TemplateResponse(request, "login.html", {"error": None})
+        return RedirectResponse(url="/library")
+    return templates.TemplateResponse(request, "login.html", {"error": None, "authenticated": False})
 
 
 @app.post("/login")
 async def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
     if secrets.compare_digest(username, ADMIN_USERNAME) and secrets.compare_digest(password, ADMIN_PASSWORD):
         request.session["authenticated"] = True
-        return RedirectResponse(url="/", status_code=303)
+        return RedirectResponse(url="/library", status_code=303)
     return templates.TemplateResponse(
-        request, "login.html", {"error": "Incorrect username or password."}, status_code=401
+        request, "login.html", {"error": "Incorrect username or password.", "authenticated": False}, status_code=401
     )
 
 
 @app.get("/logout")
 async def logout(request: Request):
     request.session.clear()
-    return RedirectResponse(url="/login", status_code=303)
+    return RedirectResponse(url="/", status_code=303)
 
 
 # ---------- Client upload endpoints (used by watcher) ----------
@@ -286,8 +309,9 @@ async def upload_video(file: UploadFile = File(...)):
 
     conn = get_db()
     cur = conn.execute(
-        "INSERT INTO clips (filename, display_name, status, thumbnail, duration) VALUES (?, ?, 'raw', ?, ?)",
-        (new_name, file.filename, thumbnail, duration)
+        "INSERT INTO clips (filename, source_filename, display_name, status, thumbnail, duration) "
+        "VALUES (?, ?, ?, 'raw', ?, ?)",
+        (new_name, new_name, file.filename, thumbnail, duration)
     )
     conn.commit()
     clip_id = cur.lastrowid
@@ -315,20 +339,21 @@ async def upload_image(file: UploadFile = File(...)):
     return {"url": f"/i/{slug}"}
 
 
-# ---------- Library ----------
+# ---------- Library (auth required) ----------
 
-@app.get("/")
+@app.get("/library")
 async def library(request: Request, user: bool = Depends(require_auth)):
     conn = get_db()
     clips = conn.execute("SELECT * FROM clips ORDER BY created_at DESC").fetchall()
     images = conn.execute("SELECT * FROM images ORDER BY created_at DESC LIMIT 24").fetchall()
     conn.close()
     return templates.TemplateResponse(
-        request, "library.html", {"clips": clips, "images": images, "active": "library"}
+        request, "library.html",
+        {"clips": clips, "images": images, "active": "library", "authenticated": True}
     )
 
 
-# ---------- Editor ----------
+# ---------- Editor (auth required) ----------
 
 @app.get("/clip/{clip_id}/edit")
 async def edit_page(request: Request, clip_id: int, user: bool = Depends(require_auth)):
@@ -338,10 +363,25 @@ async def edit_page(request: Request, clip_id: int, user: bool = Depends(require
     if not clip:
         raise HTTPException(404, "Clip not found")
 
-    subdir = "edited" if clip["status"] == "edited" else "raw"
+    source_filename = clip["source_filename"] or clip["filename"]
+    source_path, source_subdir = find_source_path(source_filename)
+    if source_path is None:
+        # last resort: fall back to whatever filename/status currently point at
+        source_filename = clip["filename"]
+        source_subdir = "edited" if clip["status"] == "edited" else "raw"
+
+    error = request.query_params.get("error")
 
     return templates.TemplateResponse(
-        request, "editor.html", {"clip": clip, "subdir": subdir, "active": "library"}
+        request, "editor.html",
+        {
+            "clip": clip,
+            "source_filename": source_filename,
+            "source_subdir": source_subdir,
+            "active": "library",
+            "authenticated": True,
+            "error": error,
+        }
     )
 
 
@@ -353,15 +393,21 @@ async def trim_clip(clip_id: int, start: str = Form(...), end: str = Form(...), 
         conn.close()
         raise HTTPException(404, "Clip not found")
 
-    src_dir = RAW_DIR if clip["status"] != "edited" else EDITED_DIR
-    src_path = src_dir / clip["filename"]
+    source_filename = clip["source_filename"] or clip["filename"]
+    source_path, _ = find_source_path(source_filename)
+    if source_path is None:
+        conn.close()
+        return RedirectResponse(
+            url=f"/clip/{clip_id}/edit?error=" + urllib.parse.quote("Source file is missing."),
+            status_code=303
+        )
 
     out_name = f"{uuid.uuid4().hex}.mp4"
     out_path = EDITED_DIR / out_name
 
     cmd = [
         "ffmpeg", "-y",
-        "-i", str(src_path),
+        "-i", str(source_path),
         "-ss", start, "-to", end,
         "-c:v", "h264_qsv", "-global_quality", "20",
         "-c:a", "aac",
@@ -372,7 +418,11 @@ async def trim_clip(clip_id: int, start: str = Form(...), end: str = Form(...), 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         conn.close()
-        raise HTTPException(500, f"ffmpeg failed: {result.stderr[-500:]}")
+        msg = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "ffmpeg failed"
+        return RedirectResponse(
+            url=f"/clip/{clip_id}/edit?error=" + urllib.parse.quote(msg),
+            status_code=303
+        )
 
     duration = get_duration(out_path)
     thumbnail = generate_thumbnail(out_path)
@@ -389,11 +439,12 @@ async def trim_clip(clip_id: int, start: str = Form(...), end: str = Form(...), 
 
 @app.post("/clip/{clip_id}/rename")
 async def rename_clip(clip_id: int, name: str = Form(...), user: bool = Depends(require_auth)):
+    name = name.strip() or None
     conn = get_db()
-    conn.execute("UPDATE clips SET display_name = ? WHERE id = ?", (name.strip() or None, clip_id))
+    conn.execute("UPDATE clips SET display_name = ? WHERE id = ?", (name, clip_id))
     conn.commit()
     conn.close()
-    return RedirectResponse(url=f"/clip/{clip_id}/edit", status_code=303)
+    return JSONResponse({"ok": True, "name": name})
 
 
 # ---------- Publish / Share ----------
@@ -424,7 +475,7 @@ async def share_clip(request: Request, slug: str):
 
     subdir = "edited" if clip["status"] == "edited" else "raw"
     return templates.TemplateResponse(
-        request, "share.html", {"clip": clip, "subdir": subdir}
+        request, "share.html", {"clip": clip, "subdir": subdir, "authenticated": is_authenticated(request)}
     )
 
 
@@ -437,24 +488,25 @@ async def share_image(request: Request, slug: str):
         raise HTTPException(404, "Image not found")
 
     return templates.TemplateResponse(
-        request, "share_image.html", {"image": img}
+        request, "share_image.html", {"image": img, "authenticated": is_authenticated(request)}
     )
 
 
-# ---------- Manual uploads ----------
+# ---------- Uploads (public landing page) ----------
 
-@app.get("/uploads")
-async def uploads_page(request: Request, user: bool = Depends(require_auth)):
+@app.get("/")
+async def uploads_page(request: Request):
     conn = get_db()
     uploads = conn.execute("SELECT * FROM uploads ORDER BY created_at DESC").fetchall()
     conn.close()
     return templates.TemplateResponse(
-        request, "uploads.html", {"uploads": uploads, "active": "uploads"}
+        request, "uploads.html",
+        {"uploads": uploads, "active": "uploads", "authenticated": is_authenticated(request)}
     )
 
 
 @app.post("/uploads/add")
-async def add_upload(file: UploadFile = File(...), user: bool = Depends(require_auth)):
+async def add_upload(file: UploadFile = File(...)):
     original_name = file.filename
     ext = Path(original_name).suffix
     new_name = f"{uuid.uuid4().hex}{ext}"
@@ -481,11 +533,12 @@ async def add_upload(file: UploadFile = File(...), user: bool = Depends(require_
 
 @app.post("/uploads/{upload_id}/rename")
 async def rename_upload(upload_id: int, name: str = Form(...), user: bool = Depends(require_auth)):
+    name = name.strip() or None
     conn = get_db()
-    conn.execute("UPDATE uploads SET display_name = ? WHERE id = ?", (name.strip() or None, upload_id))
+    conn.execute("UPDATE uploads SET display_name = ? WHERE id = ?", (name, upload_id))
     conn.commit()
     conn.close()
-    return RedirectResponse(url="/uploads", status_code=303)
+    return JSONResponse({"ok": True, "name": name})
 
 
 @app.post("/uploads/{upload_id}/delete")
@@ -503,7 +556,7 @@ async def delete_upload(upload_id: int, user: bool = Depends(require_auth)):
         conn.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
         conn.commit()
     conn.close()
-    return RedirectResponse(url="/uploads", status_code=303)
+    return RedirectResponse(url="/", status_code=303)
 
 
 @app.get("/u/{slug}")
@@ -513,4 +566,6 @@ async def share_upload(request: Request, slug: str):
     conn.close()
     if not row:
         raise HTTPException(404, "Not found")
-    return templates.TemplateResponse(request, "share_upload.html", {"upload": row})
+    return templates.TemplateResponse(
+        request, "share_upload.html", {"upload": row, "authenticated": is_authenticated(request)}
+    )

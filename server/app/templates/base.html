@@ -40,39 +40,40 @@ body {
 }
 a { color: inherit; text-decoration: none; }
 
-/* App shell */
-.app { display: flex; min-height: 100vh; }
-.sidebar {
-  width: 200px; flex-shrink: 0; border-right: 1px solid var(--border);
-  padding: 24px 14px; display: flex; flex-direction: column;
+/* Topbar */
+.topbar { border-bottom: 1px solid var(--border); }
+.topbar-inner {
+  max-width: 1400px; margin: 0 auto; padding: 16px 32px;
+  display: flex; align-items: center; justify-content: space-between;
 }
-.sidebar-brand {
-  font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 15px;
-  padding: 0 10px; margin-bottom: 20px;
-}
+.brand { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 15px; }
+.topnav { display: flex; align-items: center; gap: 6px; }
 .nav-link {
-  display: block; padding: 8px 10px; border-radius: var(--radius-sm);
-  font-size: 14px; color: var(--text-dim); margin-bottom: 2px;
+  padding: 7px 14px; border-radius: var(--radius-sm);
+  font-size: 13px; font-weight: 500; color: var(--text-dim);
 }
 .nav-link:hover { color: var(--text); background: var(--surface); }
 .nav-link.active { color: var(--text); background: var(--surface-2); }
-.sidebar-footer { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border); }
-.content { flex: 1; padding: 32px 40px; max-width: 1400px; }
+
+.shell { max-width: 1400px; margin: 0 auto; padding: 32px; }
 @media (max-width: 760px) {
-  .app { flex-direction: column; }
-  .sidebar { width: 100%; flex-direction: row; align-items: center; border-right: none; border-bottom: 1px solid var(--border); padding: 12px 16px; }
-  .sidebar-brand { margin-bottom: 0; margin-right: 12px; }
-  .nav-link { margin-bottom: 0; }
-  .sidebar-footer { margin-top: 0; margin-left: auto; padding-top: 0; border-top: none; }
-  .content { padding: 24px 16px; }
+  .topbar-inner { padding: 14px 16px; }
+  .shell { padding: 20px 16px; }
 }
 
 .content-header {
   display: flex; align-items: baseline; justify-content: space-between;
-  margin-bottom: 24px;
+  margin-bottom: 24px; gap: 16px; flex-wrap: wrap;
 }
-.content-header h1 { font-family: 'Space Grotesk', sans-serif; font-size: 20px; font-weight: 600; margin: 0; }
+.content-header h1 {
+  font-family: 'Space Grotesk', sans-serif; font-size: 20px; font-weight: 600; margin: 0;
+  cursor: default;
+}
+.content-header h1.editable { cursor: pointer; border-bottom: 1px dashed transparent; }
+.content-header h1.editable:hover { border-bottom-color: var(--text-dim); }
 .content-header .meta { font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: var(--text-dim); }
+.title-edit-row { display: flex; gap: 8px; align-items: center; }
+.title-edit-row .input { font-family: 'Space Grotesk', sans-serif; font-size: 18px; font-weight: 600; max-width: 420px; }
 
 .section-title {
   font-family: 'Space Grotesk', sans-serif; font-size: 13px; font-weight: 600;
@@ -86,10 +87,8 @@ a { color: inherit; text-decoration: none; }
 .card:hover { border-color: var(--accent); }
 .thumb { position: relative; aspect-ratio: 16/9; background: var(--surface-2); overflow: hidden; }
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.thumb-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: var(--text-dim); font-size: 28px; }
+.thumb-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: var(--text-dim); font-size: 24px; font-family: 'IBM Plex Mono', monospace; letter-spacing: 0.1em; }
 
-/* Compact cards for screenshots / non-video uploads */
-.card-compact { border-radius: var(--radius-sm); }
 .card-compact .thumb { aspect-ratio: auto; height: 160px; background: var(--surface-2); }
 .card-compact .thumb img { object-fit: contain; }
 
@@ -123,15 +122,19 @@ a { color: inherit; text-decoration: none; }
 .card-body { padding: 12px 14px 14px; }
 .card-title { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 4px; }
 .card-meta { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--text-dim); margin-bottom: 12px; }
+
 .card-actions { display: flex; gap: 8px; }
 .card-actions .btn, .card-actions form { flex: 1; }
+.card-actions-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.card-actions-grid .btn, .card-actions-grid form { width: 100%; }
 form { margin: 0; }
 form .btn { width: 100%; justify-content: center; }
 
 .btn {
   font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600;
   padding: 8px 14px; border-radius: var(--radius-sm); border: 1px solid transparent;
-  cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: all 0.15s ease;
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  transition: all 0.15s ease; line-height: 1.2;
 }
 .btn-primary { background: var(--accent); color: var(--accent-text); }
 .btn-primary:hover { background: #34d399; }
@@ -139,6 +142,7 @@ form .btn { width: 100%; justify-content: center; }
 .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
 .btn-danger { background: transparent; border-color: var(--border); color: #f87171; }
 .btn-danger:hover { border-color: #f87171; background: rgba(248,113,113,0.08); }
+.btn-icon { padding: 8px; }
 .btn-sm { padding: 6px 12px; font-size: 12px; }
 
 .empty {
@@ -146,8 +150,13 @@ form .btn { width: 100%; justify-content: center; }
   text-align: center; color: var(--text-dim); font-size: 14px;
 }
 
+.banner {
+  border: 1px solid #f87171; background: rgba(248,113,113,0.08); color: #f87171;
+  border-radius: var(--radius-sm); padding: 10px 14px; font-size: 13px; margin-bottom: 16px;
+}
+
 /* Editor */
-.editor-layout { display: grid; grid-template-columns: 1fr 300px; gap: 24px; }
+.editor-layout { display: grid; grid-template-columns: 1fr 280px; gap: 24px; }
 @media (max-width: 960px) { .editor-layout { grid-template-columns: 1fr; } }
 .main-col { display: flex; flex-direction: column; gap: 14px; }
 
@@ -164,27 +173,22 @@ form .btn { width: 100%; justify-content: center; }
   border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px;
   word-break: break-all; color: var(--text); margin-bottom: 10px;
 }
-.back-link { display: inline-block; margin-bottom: 16px; font-size: 13px; color: var(--text-dim); }
-.back-link:hover { color: var(--accent); }
 
 /* Trim timeline */
 .trim-times { display: flex; justify-content: space-between; }
 .trim-timeline {
   position: relative; height: 52px; background: var(--surface-2);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
-  cursor: pointer; user-select: none;
+  cursor: pointer; user-select: none; overflow: hidden;
 }
+.trim-buffered { position: absolute; top: 0; bottom: 0; left: 0; width: 0%; background: rgba(255,255,255,0.05); }
 .trim-selection { position: absolute; top: 0; bottom: 0; background: rgba(16,185,129,0.16); border-left: 1px solid var(--accent); border-right: 1px solid var(--accent); }
 .trim-handle {
   position: absolute; top: -4px; bottom: -4px; width: 14px; margin-left: -7px;
-  background: var(--accent); border-radius: 4px; cursor: ew-resize; touch-action: none;
+  background: var(--accent); border-radius: 4px; cursor: ew-resize; touch-action: none; z-index: 2;
 }
 .trim-handle::after { content: ''; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 2px; height: 16px; background: var(--accent-text); border-radius: 1px; }
-.trim-playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; opacity: 0.55; pointer-events: none; }
-
-/* Rename */
-.rename-row { display: flex; gap: 8px; }
-.rename-row .input { flex: 1; }
+.trim-playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; opacity: 0.55; pointer-events: none; z-index: 1; }
 
 /* Share pages */
 .share-shell { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; }
@@ -192,15 +196,15 @@ form .btn { width: 100%; justify-content: center; }
 .share-media .plyr { border-radius: var(--radius); border: 1px solid var(--border); }
 .share-media img { max-width: 100%; border-radius: var(--radius); border: 1px solid var(--border); display: block; margin: 0 auto; }
 .share-title { font-family: 'Space Grotesk', sans-serif; font-size: 14px; color: var(--text-dim); margin-bottom: 12px; text-align: center; }
-.share-download { margin-top: 16px; }
+.share-download { margin-top: 16px; text-align: center; }
 .share-brand {
   margin-top: 16px; font-family: 'IBM Plex Mono', monospace; font-size: 12px;
   color: var(--text-dim); letter-spacing: 0.08em; text-transform: uppercase;
 }
 
-/* Login */
+/* Inputs */
 .input {
-  width: 100%; font-family: 'Inter', sans-serif; font-size: 14px;
+  font-family: 'Inter', sans-serif; font-size: 14px;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
   color: var(--text); padding: 9px 12px;
 }
@@ -208,7 +212,7 @@ form .btn { width: 100%; justify-content: center; }
 .field { margin-bottom: 14px; }
 .field label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em; }
 .login-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 32px; max-width: 360px; width: 100%; }
-.login-card .sidebar-brand { text-align: center; margin-bottom: 24px; padding: 0; font-size: 16px; }
+.login-card .brand { display: block; text-align: center; margin-bottom: 24px; font-size: 16px; }
 .login-error {
   background: rgba(248,113,113,0.08); border: 1px solid #f87171; color: #f87171;
   border-radius: var(--radius-sm); padding: 8px 12px; font-size: 13px; margin-bottom: 16px;
@@ -237,10 +241,36 @@ form .btn { width: 100%; justify-content: center; }
   opacity: 0; transition: all 0.2s ease; pointer-events: none; z-index: 1000;
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* Modal */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+  display: none; align-items: center; justify-content: center; z-index: 2000; padding: 16px;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 20px; width: 100%; max-width: 340px;
+}
+.modal h3 { margin: 0 0 12px; font-family: 'Space Grotesk', sans-serif; font-size: 15px; }
+.modal-actions { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
+.modal-actions .btn { min-width: 80px; }
 </style>
 </head>
 <body>
 {% block body %}{% endblock %}
+
+<div class="modal-overlay" id="rename-modal">
+  <div class="modal">
+    <h3>Rename</h3>
+    <input class="input" id="rename-input" style="width: 100%;">
+    <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeRenameModal()">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="submitRenameModal()">Save</button>
+    </div>
+  </div>
+</div>
+
 <script>
 function showToast(msg) {
   let t = document.getElementById('toast');
@@ -274,6 +304,49 @@ function copyToClipboard(text) {
     fallbackCopy(text, done);
   }
 }
+
+/* ---- Rename modal ---- */
+let _renameTarget = null; // { id, kind: 'clip'|'upload', cardEl }
+
+function openRename(id, currentName, kind, cardEl) {
+  _renameTarget = { id, kind, cardEl };
+  const input = document.getElementById('rename-input');
+  input.value = currentName;
+  document.getElementById('rename-modal').classList.add('show');
+  setTimeout(() => { input.focus(); input.select(); }, 0);
+}
+function closeRenameModal() {
+  document.getElementById('rename-modal').classList.remove('show');
+  _renameTarget = null;
+}
+async function submitRenameModal() {
+  if (!_renameTarget) return;
+  const name = document.getElementById('rename-input').value;
+  const url = _renameTarget.kind === 'clip'
+    ? `/clip/${_renameTarget.id}/rename`
+    : `/uploads/${_renameTarget.id}/rename`;
+  const formData = new FormData();
+  formData.append('name', name);
+  const res = await fetch(url, { method: 'POST', body: formData });
+  if (res.ok) {
+    const data = await res.json();
+    if (_renameTarget.cardEl) {
+      const titleEl = _renameTarget.cardEl.querySelector('.card-title');
+      if (titleEl) titleEl.textContent = data.name || titleEl.dataset.fallback || titleEl.textContent;
+    }
+    showToast('Renamed');
+  } else {
+    showToast('Rename failed');
+  }
+  closeRenameModal();
+}
+document.getElementById('rename-modal').addEventListener('click', (e) => {
+  if (e.target.id === 'rename-modal') closeRenameModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeRenameModal();
+  if (e.key === 'Enter' && _renameTarget) submitRenameModal();
+});
 </script>
 </body>
 </html>

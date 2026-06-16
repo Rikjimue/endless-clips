@@ -4,62 +4,56 @@
 <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
 {% endblock %}
 {% block body %}
-<div class="app">
-  {% include "_sidebar.html" %}
-  <div class="content">
-    <a href="/" class="back-link">&larr; Library</a>
-    <div class="content-header">
-      <h1>{{ clip.display_name or clip.filename }}</h1>
-      <span class="meta">status: {{ clip.status }}</span>
-    </div>
+{% include "_nav.html" %}
+<div class="shell">
+  {% if error %}
+  <div class="banner">Trim failed: {{ error }}</div>
+  {% endif %}
 
-    <div class="editor-layout">
-      <div class="main-col">
-        <div class="player-wrap">
-          <video id="player" playsinline controls>
-            <source src="/media/{{ subdir }}/{{ clip.filename }}" type="video/mp4">
-          </video>
-        </div>
+  <div class="content-header">
+    <h1 class="editable" id="clip-title" onclick="startTitleEdit()">{{ clip.display_name or clip.filename }}</h1>
+    <span class="meta">status: {{ clip.status }}</span>
+  </div>
 
-        <div class="trim-times">
-          <span class="timecode" id="start-display">0:00.00</span>
-          <span class="timecode" id="end-display">0:00.00</span>
-        </div>
-        <div class="trim-timeline" id="timeline">
-          <div class="trim-selection" id="trim-selection"></div>
-          <div class="trim-playhead" id="playhead"></div>
-          <div class="trim-handle" id="handle-start"></div>
-          <div class="trim-handle" id="handle-end"></div>
-        </div>
-
-        <form action="/clip/{{ clip.id }}/trim" method="post" id="trim-form">
-          <input type="hidden" name="start" id="start" value="0">
-          <input type="hidden" name="end" id="end" value="0">
-          <button type="submit" class="btn btn-primary btn-block">Trim &amp; save</button>
-        </form>
+  <div class="editor-layout">
+    <div class="main-col">
+      <div class="player-wrap">
+        <video id="player" playsinline controls preload="auto">
+          <source src="/media/{{ source_subdir }}/{{ source_filename }}" type="video/mp4">
+        </video>
       </div>
 
-      <div>
-        <div class="panel">
-          <h2>Name</h2>
-          <form action="/clip/{{ clip.id }}/rename" method="post" class="rename-row">
-            <input class="input" type="text" name="name" value="{{ clip.display_name or clip.filename }}">
-            <button type="submit" class="btn btn-outline">Save</button>
-          </form>
-        </div>
+      <div class="trim-times">
+        <span class="timecode" id="start-display">0:00.00</span>
+        <span class="timecode" id="end-display">0:00.00</span>
+      </div>
+      <div class="trim-timeline" id="timeline">
+        <div class="trim-buffered" id="buffered"></div>
+        <div class="trim-selection" id="trim-selection"></div>
+        <div class="trim-playhead" id="playhead"></div>
+        <div class="trim-handle" id="handle-start"></div>
+        <div class="trim-handle" id="handle-end"></div>
+      </div>
 
-        <div class="panel">
-          <h2>Share</h2>
-          {% if clip.published %}
-          <div class="share-link-box" id="share-link">/c/{{ clip.slug }}</div>
-          <button class="btn btn-outline btn-block" onclick="copyToClipboard(shareLinkFull)">Copy link</button>
-          <a href="/c/{{ clip.slug }}" class="btn btn-primary btn-block" target="_blank" rel="noopener" style="margin-top:8px;">Open</a>
-          {% else %}
-          <form action="/clip/{{ clip.id }}/publish" method="post">
-            <button type="submit" class="btn btn-primary btn-block">Publish</button>
-          </form>
-          {% endif %}
-        </div>
+      <form action="/clip/{{ clip.id }}/trim" method="post" id="trim-form">
+        <input type="hidden" name="start" id="start" value="0">
+        <input type="hidden" name="end" id="end" value="0">
+        <button type="submit" class="btn btn-primary btn-block">Trim &amp; save</button>
+      </form>
+    </div>
+
+    <div>
+      <div class="panel">
+        <h2>Share</h2>
+        {% if clip.published %}
+        <div class="share-link-box" id="share-link">/c/{{ clip.slug }}</div>
+        <button class="btn btn-outline btn-block" onclick="copyToClipboard(shareLinkFull)">Copy link</button>
+        <a href="/c/{{ clip.slug }}" class="btn btn-primary btn-block" target="_blank" rel="noopener" style="margin-top:8px;">Open in new tab</a>
+        {% else %}
+        <form action="/clip/{{ clip.id }}/publish" method="post">
+          <button type="submit" class="btn btn-primary btn-block">Publish</button>
+        </form>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -73,6 +67,7 @@ const player = new Plyr('#player', {
 
 const timeline = document.getElementById('timeline');
 const selection = document.getElementById('trim-selection');
+const buffered = document.getElementById('buffered');
 const handleStart = document.getElementById('handle-start');
 const handleEnd = document.getElementById('handle-end');
 const playhead = document.getElementById('playhead');
@@ -84,6 +79,8 @@ const endDisplay = document.getElementById('end-display');
 let duration = 0;
 let startTime = 0;
 let endTime = 0;
+let pendingSeek = null;
+let seekScheduled = false;
 
 function formatTime(t) {
   const m = Math.floor(t / 60);
@@ -104,12 +101,32 @@ function updateUI() {
   endDisplay.textContent = formatTime(endTime);
 }
 
+function updateBuffered() {
+  if (!duration || !player.media.buffered.length) return;
+  const end = player.media.buffered.end(player.media.buffered.length - 1);
+  buffered.style.width = (end / duration * 100) + '%';
+}
+
+function scheduleSeek(time) {
+  pendingSeek = time;
+  if (!seekScheduled) {
+    seekScheduled = true;
+    requestAnimationFrame(() => {
+      if (pendingSeek !== null) player.currentTime = pendingSeek;
+      seekScheduled = false;
+      pendingSeek = null;
+    });
+  }
+}
+
 player.on('loadedmetadata', () => {
   duration = player.duration;
   startTime = 0;
   endTime = duration;
   updateUI();
 });
+
+player.on('progress', updateBuffered);
 
 player.on('timeupdate', () => {
   if (duration) {
@@ -133,7 +150,7 @@ function setupDrag(handle, isStart) {
         time = Math.max(Math.min(time, duration), startTime + 0.1);
         endTime = time;
       }
-      player.currentTime = time;
+      scheduleSeek(time);
       updateUI();
     };
     const up = () => {
@@ -152,7 +169,7 @@ timeline.addEventListener('pointerdown', (e) => {
   const rect = timeline.getBoundingClientRect();
   let pct = (e.clientX - rect.left) / rect.width;
   pct = Math.min(Math.max(pct, 0), 1);
-  player.currentTime = pct * duration;
+  scheduleSeek(pct * duration);
 });
 
 const shareLinkEl = document.getElementById('share-link');
@@ -160,6 +177,53 @@ let shareLinkFull = '';
 if (shareLinkEl) {
   shareLinkFull = location.origin + shareLinkEl.textContent;
   shareLinkEl.textContent = shareLinkFull;
+}
+
+/* ---- Inline title rename ---- */
+function startTitleEdit() {
+  const h1 = document.getElementById('clip-title');
+  const current = h1.textContent;
+  const wrap = document.createElement('div');
+  wrap.className = 'title-edit-row';
+  wrap.innerHTML = `
+    <input class="input" id="title-input" value="${current.replace(/"/g, '&quot;')}">
+    <button class="btn btn-primary btn-sm" id="title-save">Save</button>
+    <button class="btn btn-outline btn-sm" id="title-cancel">Cancel</button>
+  `;
+  h1.replaceWith(wrap);
+  const input = wrap.querySelector('#title-input');
+  input.focus();
+  input.select();
+
+  function finish(newName) {
+    const newH1 = document.createElement('h1');
+    newH1.className = 'editable';
+    newH1.id = 'clip-title';
+    newH1.textContent = newName;
+    newH1.onclick = startTitleEdit;
+    wrap.replaceWith(newH1);
+  }
+
+  wrap.querySelector('#title-cancel').onclick = () => finish(current);
+  async function save() {
+    const name = input.value.trim();
+    const formData = new FormData();
+    formData.append('name', name);
+    const res = await fetch('/clip/{{ clip.id }}/rename', { method: 'POST', body: formData });
+    if (res.ok) {
+      const data = await res.json();
+      finish(data.name || '{{ clip.filename }}');
+      showToast('Renamed');
+    } else {
+      finish(current);
+      showToast('Rename failed');
+    }
+  }
+  wrap.querySelector('#title-save').onclick = save;
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') save();
+    if (e.key === 'Escape') finish(current);
+  });
 }
 </script>
 {% endblock %}

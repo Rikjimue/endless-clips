@@ -1,97 +1,95 @@
 {% extends "base.html" %}
 {% block title %}Library — Endless Clips{% endblock %}
 {% block body %}
-<div class="app">
-  {% include "_sidebar.html" %}
-  <div class="content">
-    {% set drafts = clips | rejectattr('published') | list %}
-    {% set published = clips | selectattr('published') | list %}
+{% include "_nav.html" %}
+<div class="shell">
+  {% set drafts = clips | rejectattr('published') | list %}
+  {% set published = clips | selectattr('published') | list %}
 
-    <div class="content-header">
-      <h1>Library</h1>
-      <span class="meta">{{ clips|length }} clip{{ 's' if clips|length != 1 else '' }}</span>
-    </div>
-
-    <div class="section-title">Drafts</div>
-    {% if drafts %}
-    <div class="grid">
-      {% for clip in drafts %}
-      <div class="card">
-        <div class="thumb">
-          {% if clip.thumbnail %}
-          <img src="/media/thumbnails/{{ clip.thumbnail }}" alt="">
-          {% else %}
-          <div class="thumb-placeholder">▶</div>
-          {% endif %}
-          <span class="status-pill status-{{ clip.status }}">{{ clip.status }}</span>
-          <span class="timecode duration-badge">{{ clip.duration | duration }}</span>
-        </div>
-        <div class="card-body">
-          <div class="card-title">{{ clip.display_name or clip.filename }}</div>
-          <div class="card-meta">{{ clip.created_at }}</div>
-          <div class="card-actions">
-            <a href="/clip/{{ clip.id }}/edit" class="btn btn-outline">Edit</a>
-            <form action="/clip/{{ clip.id }}/publish" method="post">
-              <button type="submit" class="btn btn-primary">Publish</button>
-            </form>
-          </div>
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}
-    <div class="empty">No drafts. New clips land here as soon as they're uploaded.</div>
-    {% endif %}
-
-    <div class="section-title">Published</div>
-    {% if published %}
-    <div class="grid">
-      {% for clip in published %}
-      <div class="card">
-        <div class="thumb">
-          {% if clip.thumbnail %}
-          <img src="/media/thumbnails/{{ clip.thumbnail }}" alt="">
-          {% else %}
-          <div class="thumb-placeholder">▶</div>
-          {% endif %}
-          <span class="status-pill status-{{ clip.status }}">{{ clip.status }}</span>
-          <span class="timecode duration-badge">{{ clip.duration | duration }}</span>
-        </div>
-        <div class="card-body">
-          <div class="card-title">{{ clip.display_name or clip.filename }}</div>
-          <div class="card-meta">{{ clip.created_at }}</div>
-          <div class="card-actions">
-            <a href="/clip/{{ clip.id }}/edit" class="btn btn-outline">Edit</a>
-            <button class="btn btn-outline" onclick="copyToClipboard(location.origin + '/c/{{ clip.slug }}')">Copy</button>
-            <a href="/c/{{ clip.slug }}" class="btn btn-primary" target="_blank" rel="noopener">View</a>
-          </div>
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}
-    <div class="empty">Nothing published yet.</div>
-    {% endif %}
-
-    {% if images %}
-    <div class="section-title">Screenshots</div>
-    <div class="grid">
-      {% for image in images %}
-      <div class="card card-compact">
-        <div class="thumb">
-          <img src="/media/images/{{ image.filename }}" alt="">
-        </div>
-        <div class="card-body">
-          <div class="card-meta">{{ image.created_at }}</div>
-          <div class="card-actions">
-            <button class="btn btn-outline" onclick="copyToClipboard(location.origin + '/i/{{ image.slug }}')">Copy</button>
-            <a href="/i/{{ image.slug }}" class="btn btn-primary" target="_blank" rel="noopener">View</a>
-          </div>
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-    {% endif %}
+  <div class="content-header">
+    <h1>Library</h1>
+    <span class="meta">{{ clips|length }} clip{{ 's' if clips|length != 1 else '' }}</span>
   </div>
+
+  <div class="section-title">Drafts</div>
+  {% if drafts %}
+  <div class="grid">
+    {% for clip in drafts %}
+    <div class="card">
+      <div class="thumb">
+        {% if clip.thumbnail %}
+        <img src="/media/thumbnails/{{ clip.thumbnail }}" alt="">
+        {% else %}
+        <div class="thumb-placeholder">NO PREVIEW</div>
+        {% endif %}
+        <span class="status-pill status-{{ clip.status }}">{{ clip.status }}</span>
+        <span class="timecode duration-badge">{{ clip.duration | duration }}</span>
+      </div>
+      <div class="card-body">
+        <div class="card-title">{{ clip.display_name or clip.filename }}</div>
+        <div class="card-meta">{{ clip.created_at }}</div>
+        <div class="card-actions">
+          <a href="/clip/{{ clip.id }}/edit" class="btn btn-outline">Edit</a>
+          <form action="/clip/{{ clip.id }}/publish" method="post">
+            <button type="submit" class="btn btn-primary">Publish</button>
+          </form>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">No drafts. New clips land here as soon as they're uploaded.</div>
+  {% endif %}
+
+  <div class="section-title">Published</div>
+  {% if published %}
+  <div class="grid">
+    {% for clip in published %}
+    <div class="card">
+      <div class="thumb">
+        {% if clip.thumbnail %}
+        <img src="/media/thumbnails/{{ clip.thumbnail }}" alt="">
+        {% else %}
+        <div class="thumb-placeholder">NO PREVIEW</div>
+        {% endif %}
+        <span class="status-pill status-{{ clip.status }}">{{ clip.status }}</span>
+        <span class="timecode duration-badge">{{ clip.duration | duration }}</span>
+      </div>
+      <div class="card-body">
+        <div class="card-title">{{ clip.display_name or clip.filename }}</div>
+        <div class="card-meta">{{ clip.created_at }}</div>
+        <div class="card-actions">
+          <a href="/clip/{{ clip.id }}/edit" class="btn btn-outline">Edit</a>
+          <button class="btn btn-outline" onclick="copyToClipboard(location.origin + '/c/{{ clip.slug }}')">Copy</button>
+          <a href="/c/{{ clip.slug }}" class="btn btn-primary" target="_blank" rel="noopener">View</a>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">Nothing published yet.</div>
+  {% endif %}
+
+  {% if images %}
+  <div class="section-title">Screenshots</div>
+  <div class="grid">
+    {% for image in images %}
+    <div class="card card-compact">
+      <div class="thumb">
+        <img src="/media/images/{{ image.filename }}" alt="">
+      </div>
+      <div class="card-body">
+        <div class="card-meta">{{ image.created_at }}</div>
+        <div class="card-actions">
+          <button class="btn btn-outline" onclick="copyToClipboard(location.origin + '/i/{{ image.slug }}')">Copy</button>
+          <a href="/i/{{ image.slug }}" class="btn btn-primary" target="_blank" rel="noopener">View</a>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
 </div>
 {% endblock %}

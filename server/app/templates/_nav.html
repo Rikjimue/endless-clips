@@ -1,0 +1,14 @@
+<div class="topbar">
+  <div class="topbar-inner">
+    <a href="/" class="brand">Endless Clips</a>
+    <nav class="topnav">
+      <a href="/" class="nav-link {{ 'active' if active == 'uploads' }}">Upload</a>
+      {% if authenticated %}
+      <a href="/library" class="nav-link {{ 'active' if active == 'library' }}">Library</a>
+      <a href="/logout" class="nav-link">Sign out</a>
+      {% else %}
+      <a href="/login" class="nav-link">Sign in</a>
+      {% endif %}
+    </nav>
+  </div>
+</div>
