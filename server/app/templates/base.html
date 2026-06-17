@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{% block title %}Endless Clips{% endblock %}</title>
+<link rel="icon" type="image/png" href="/static/favicon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -50,7 +53,9 @@ a { color: inherit; text-decoration: none; }
   max-width: 1320px; margin: 0 auto; padding: 16px 28px;
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
 }
-.brand { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 15px; }
+.brand { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 15px; display: inline-flex; align-items: center; }
+.brand-logo { height: 26px; width: auto; display: block; }
+.brand-logo-lg { height: 42px; width: auto; display: block; margin: 0 auto 18px; }
 .topnav { display: flex; align-items: center; gap: 6px; }
 .nav-link { padding: 7px 14px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; color: var(--text-dim); transition: color .15s, background .15s; }
 .nav-link:hover { color: var(--text); background: var(--surface); }
@@ -231,6 +236,14 @@ form { margin: 0; }
 .notif .na { display: flex; gap: 8px; }
 .notif .na .btn { flex: 1; }
 
+/* Full-screen loading overlay (trim/transcode + save) */
+.app-loading { position: fixed; inset: 0; background: rgba(8,9,11,0.93); display: none; flex-direction: column; align-items: center; justify-content: center; gap: 20px; z-index: 4000; }
+.app-loading.show { display: flex; }
+.loading-logo { width: 64px; height: 64px; animation: load-pulse 1.6s ease-in-out infinite; }
+@keyframes load-pulse { 0%,100% { opacity: .5; transform: scale(.95); } 50% { opacity: 1; transform: scale(1.03); } }
+.loading-spin { width: 34px; height: 34px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+.loading-msg { font-family: 'Space Grotesk', sans-serif; font-size: 14px; color: var(--text-dim); }
+
 @media (max-width: 600px) {
   .topbar-inner { padding: 14px 16px; flex-wrap: wrap; gap: 8px; }
   .shell { padding: 22px 16px 56px; }
@@ -249,7 +262,16 @@ form { margin: 0; }
   <div class="lightbox-bar"></div>
 </div>
 
+<div class="app-loading" id="app-loading">
+  <img src="/static/favicon.png" alt="" class="loading-logo">
+  <div class="loading-spin"></div>
+  <div class="loading-msg" id="loading-msg">Working…</div>
+</div>
+
 <script>
+function showLoading(msg) { const el = document.getElementById('app-loading'); if (!el) return; document.getElementById('loading-msg').textContent = msg || 'Working…'; el.classList.add('show'); }
+function hideLoading() { const el = document.getElementById('app-loading'); if (el) el.classList.remove('show'); }
+window.addEventListener('pageshow', hideLoading);
 window.CLIPS_AUTH = {{ 'true' if authenticated else 'false' }};
 
 /* ---- Notifications ---- */

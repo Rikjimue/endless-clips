@@ -249,7 +249,9 @@ document.addEventListener('keydown', (e) => {
 });
 
 document.getElementById('trim-form').addEventListener('submit', (e) => {
-  if (endTime - startTime < 0.05) { e.preventDefault(); showToast('Selection is empty'); }
+  if (endTime - startTime < 0.05) { e.preventDefault(); showToast('Selection is empty'); return; }
+  const copy = document.getElementById('save_as').value === 'copy';
+  showLoading(copy ? 'Saving a copy & transcoding…' : 'Transcoding & saving your clip…');
 });
 
 const shareLinkEl = document.getElementById('share-link');
