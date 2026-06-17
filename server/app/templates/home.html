@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Endless Clips{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+
+{% macro byline(name) %}
+  <div class="byline">
+    {% if name %}<span class="avatar">{{ name[0] | upper }}</span><span>by <span class="who">@{{ name }}</span></span>
+    {% else %}<span class="avatar anon">?</span><span>anonymous</span>{% endif %}
+  </div>
+{% endmacro %}
+
+<div class="shell">
+  <div class="content-header">
+    <h1>Home</h1>
+    <span class="meta">public clips &amp; screenshots</span>
+  </div>
+
+  {% if not authenticated %}
+  <div class="dropzone" data-list="#progress-list" role="button" tabindex="0" aria-label="Upload a file">
+    <strong>Drop a clip or screenshot</strong>, or click to browse — you'll get a shareable link instantly
+    <input type="file" multiple hidden>
+  </div>
+  <div class="upload-progress-list" id="progress-list"></div>
+  {% endif %}
+
+  {% set has_gallery = gallery_clips or gallery_uploads or gallery_images %}
+  {% if has_gallery %}
+  <div class="grid">
+    {% for clip in gallery_clips %}
+    <div class="card">
+      <div class="thumb playable" data-src="/media/{{ 'edited' if clip.status == 'edited' else 'raw' }}/{{ clip.filename }}">
+        {% if clip.thumbnail %}<img src="/media/thumbnails/{{ clip.thumbnail }}" alt="">{% else %}<div class="thumb-placeholder">CLIP</div>{% endif %}
+        <div class="play-btn"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="rgba(8,9,11,0.55)" stroke="#fff" stroke-opacity="0.55"/><path d="M10 8.3l5.2 3.7-5.2 3.7z" fill="#fff"/></svg></div>
+        <span class="timecode duration-badge">{{ clip.duration | duration }}</span>
+      </div>
+      <div class="card-body">
+        <div class="card-title">{{ clip.display_name or 'Clip' }}</div>
+        {{ byline(clip.owner_name) }}
+        <div class="actions">
+          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/c/{{ clip.slug }}')">Copy link</button>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+
+    {% for u in gallery_uploads %}
+    <div class="card {{ 'card-compact' if u.kind != 'video' }}">
+      <div class="thumb {{ 'playable' if u.kind == 'video' }}" {% if u.kind == 'video' %}data-src="/media/uploads/{{ u.filename }}"{% endif %}>
+        {% if u.kind == 'video' and u.thumbnail %}<img src="/media/thumbnails/{{ u.thumbnail }}" alt="">
+        {% elif u.kind == 'image' %}<img src="/media/uploads/{{ u.filename }}" alt="">
+        {% else %}<div class="thumb-placeholder">{{ (u.original_name.split('.')[-1] if '.' in u.original_name else 'FILE') | upper }}</div>{% endif %}
+        {% if u.kind == 'video' %}<div class="play-btn"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="rgba(8,9,11,0.55)" stroke="#fff" stroke-opacity="0.55"/><path d="M10 8.3l5.2 3.7-5.2 3.7z" fill="#fff"/></svg></div>{% endif %}
+      </div>
+      <div class="card-body">
+        <div class="card-title">{{ u.display_name or u.original_name }}</div>
+        {{ byline(u.owner_name) }}
+        <div class="actions">
+          {% if u.kind != 'video' %}<a href="/u/{{ u.slug }}" class="btn btn-primary btn-sm" target="_blank" rel="noopener">Open</a>{% endif %}
+          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/u/{{ u.slug }}')">Copy link</button>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+
+    {% for image in gallery_images %}
+    <div class="card card-compact">
+      <div class="thumb"><img src="/media/images/{{ image.filename }}" alt=""></div>
+      <div class="card-body">
+        {{ byline(image.owner_name) }}
+        <div class="actions">
+          <a href="/i/{{ image.slug }}" class="btn btn-primary btn-sm" target="_blank" rel="noopener">Open</a>
+          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/i/{{ image.slug }}')">Copy link</button>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">
+    No public clips yet.
+    {% if authenticated %}Publish something from your <a href="/library">Library</a>.{% else %}Drop a file above to share one, or <a href="/login">sign in</a> to build a library.{% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

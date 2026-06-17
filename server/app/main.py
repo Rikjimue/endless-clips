@@ -874,14 +874,12 @@ async def home(request: Request):
         "SELECT i.*, u.username AS owner_name FROM images i LEFT JOIN users u ON u.id = i.user_id "
         "WHERE i.visibility = 'public' ORDER BY i.created_at DESC"
     ).fetchall()
-    my_uploads = conn.execute("SELECT * FROM uploads WHERE user_id = ? ORDER BY created_at DESC",
-                              (user["id"],)).fetchall() if authed else []
     conn.close()
     return templates.TemplateResponse(
-        request, "uploads.html",
+        request, "home.html",
         {"gallery_clips": gallery_clips, "gallery_uploads": gallery_uploads,
-         "gallery_images": gallery_images, "my_uploads": my_uploads,
-         "active": "uploads", "authenticated": authed, "user": user})
+         "gallery_images": gallery_images, "active": "home",
+         "authenticated": authed, "user": user})
 
 
 # ---------- Library ----------
@@ -891,16 +889,20 @@ async def library(request: Request, user: dict = Depends(require_user)):
     conn = get_db()
     if user["is_admin"]:
         clips = conn.execute("SELECT * FROM clips ORDER BY created_at DESC").fetchall()
-        images = conn.execute("SELECT * FROM images ORDER BY created_at DESC LIMIT 60").fetchall()
+        images = conn.execute("SELECT * FROM images ORDER BY created_at DESC LIMIT 120").fetchall()
+        uploads = conn.execute("SELECT * FROM uploads ORDER BY created_at DESC").fetchall()
     else:
         clips = conn.execute("SELECT * FROM clips WHERE user_id = ? ORDER BY created_at DESC",
                              (user["id"],)).fetchall()
-        images = conn.execute("SELECT * FROM images WHERE user_id = ? ORDER BY created_at DESC LIMIT 60",
+        images = conn.execute("SELECT * FROM images WHERE user_id = ? ORDER BY created_at DESC LIMIT 120",
                              (user["id"],)).fetchall()
+        uploads = conn.execute("SELECT * FROM uploads WHERE user_id = ? ORDER BY created_at DESC",
+                              (user["id"],)).fetchall()
     conn.close()
     return templates.TemplateResponse(
         request, "library.html",
-        {"clips": clips, "images": images, "active": "library", "authenticated": True, "user": user})
+        {"clips": clips, "images": images, "uploads": uploads,
+         "active": "library", "authenticated": True, "user": user})
 
 
 # ---------- Editor ----------
