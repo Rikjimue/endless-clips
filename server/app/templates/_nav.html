@@ -2,10 +2,10 @@
   <div class="topbar-inner">
     <a href="/" class="brand"><img src="/static/logo.png" alt="Endless Clips" class="brand-logo"></a>
     <nav class="topnav">
-      <a href="/" class="nav-link {{ 'active' if active == 'home' }}">{{ 'Browse' if authenticated else 'Home' }}</a>
-      {% if authenticated %}
-      <a href="/library" class="nav-link {{ 'active' if active == 'library' }}">Library</a>
-      {% if user and user.username %}<span class="nav-user">@{{ user.username }}</span>{% endif %}
+      <a href="/" class="nav-link {{ 'active' if active|default('') == 'home' }}">{{ 'Browse' if authenticated|default(false) else 'Home' }}</a>
+      {% if authenticated|default(false) %}
+      <a href="/library" class="nav-link {{ 'active' if active|default('') == 'library' }}">Library</a>
+      {% if user|default(none) and user.username %}<span class="nav-user">@{{ user.username }}</span>{% endif %}
       <a href="/logout" class="nav-link">Sign out</a>
       {% else %}
       <a href="/login" class="nav-link">Sign in</a>

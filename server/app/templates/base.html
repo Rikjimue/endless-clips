@@ -262,7 +262,7 @@ form { margin: 0; }
 }
 </style>
 </head>
-<body>
+<body data-auth="{{ 'true' if authenticated|default(false) else 'false' }}">
 {% block body %}{% endblock %}
 
 <div class="lightbox" id="lightbox" onclick="if(event.target===this)closeLightbox()">
@@ -292,7 +292,7 @@ form { margin: 0; }
 function showLoading(msg) { const el = document.getElementById('app-loading'); if (!el) return; document.getElementById('loading-msg').textContent = msg || 'Working…'; el.classList.add('show'); }
 function hideLoading() { const el = document.getElementById('app-loading'); if (el) el.classList.remove('show'); }
 window.addEventListener('pageshow', hideLoading);
-window.CLIPS_AUTH = {{ 'true' if authenticated else 'false' }};
+window.CLIPS_AUTH = (document.body.getAttribute('data-auth') === 'true');
 
 /* ---- Notifications ---- */
 function showToast(msg) {
