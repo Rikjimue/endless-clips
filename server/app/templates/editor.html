@@ -25,7 +25,7 @@
   <div class="editor-layout">
     <div class="main-col">
       <div class="player-wrap">
-        <video id="player" playsinline controls preload="auto">
+        <video id="player" playsinline controls preload="metadata">
           <source src="/media/{{ source_subdir }}/{{ source_filename }}" type="video/mp4">
         </video>
       </div>
@@ -98,7 +98,7 @@
 
       <div class="panel danger-zone">
         <h2>Danger zone</h2>
-        <form action="/clip/{{ clip.id }}/delete" method="post" onsubmit="return confirm('Delete this clip and its files? This cannot be undone.')">
+        <form action="/clip/{{ clip.id }}/delete" method="post" data-confirm="Delete this clip and its files? This cannot be undone.">
           <button type="submit" class="btn btn-danger btn-block">Delete clip</button>
         </form>
       </div>
@@ -297,5 +297,21 @@ function startTitleEdit() {
     if (e.key === 'Escape') finish(current);
   });
 }
+
+{% if not clip.ready %}
+/* Clip still being prepared (faststart + metadata). Hold an initializing screen
+   and reload once it's ready so playback and the timeline are instant. */
+document.addEventListener('DOMContentLoaded', () => {
+  showLoading('Preparing your clip… this only happens once');
+  const tick = async () => {
+    try {
+      const r = await fetch('/clip/{{ clip.id }}/status', { headers: { 'Accept': 'application/json' } });
+      if (r.ok) { const d = await r.json(); if (d.ready) { location.reload(); return; } }
+    } catch (e) {}
+    setTimeout(tick, 1500);
+  };
+  tick();
+});
+{% endif %}
 </script>
 {% endblock %}

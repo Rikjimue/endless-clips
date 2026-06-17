@@ -359,14 +359,16 @@ templates.env.filters["duration"] = format_duration
 
 # ---------- Background metadata ----------
 
-def build_clip_metadata(clip_id: int, filename: str):
+def build_clip_metadata(clip_id: int, filename: str, faststart: bool = True):
     path, _ = find_source_path(filename)
     if path is None:
         return
+    if faststart:
+        optimize_faststart(path)   # move moov atom to the front -> instant playback/seek
     duration = get_duration(path)
     thumbnail = generate_thumbnail(path)
     conn = get_db()
-    conn.execute("UPDATE clips SET duration = ?, thumbnail = ? WHERE id = ?",
+    conn.execute("UPDATE clips SET duration = ?, thumbnail = ?, ready = 1 WHERE id = ?",
                  (duration, thumbnail, clip_id))
     conn.commit()
     conn.close()
@@ -585,6 +587,8 @@ def init_db():
     _add_col(conn, "clips", "hls_status", "hls_status TEXT DEFAULT 'none'")
     _add_col(conn, "clips", "hls_dir", "hls_dir TEXT")
     _add_col(conn, "clips", "user_id", "user_id INTEGER")
+    if _add_col(conn, "clips", "ready", "ready INTEGER DEFAULT 1"):
+        conn.execute("UPDATE clips SET ready = 1 WHERE ready IS NULL")
     _add_col(conn, "images", "visibility", "visibility TEXT DEFAULT 'unlisted'")
     _add_col(conn, "images", "user_id", "user_id INTEGER")
     _add_col(conn, "images", "display_name", "display_name TEXT")
@@ -872,14 +876,13 @@ async def upload_video(request: Request, background: BackgroundTasks, file: Uplo
     slug = uuid.uuid4().hex[:8]
     conn = get_db()
     cur = conn.execute(
-        "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, duration, user_id) "
-        "VALUES (?, ?, ?, 'raw', 'private', ?, 0, ?)",
+        "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, duration, ready, user_id) "
+        "VALUES (?, ?, ?, 'raw', 'private', ?, 0, 0, ?)",
         (new_name, new_name, file.filename, slug, owner))
     conn.commit()
     clip_id = cur.lastrowid
     conn.close()
-    background.add_task(build_clip_metadata, clip_id, new_name)
-    # Notify the owner's browser that a new clip is ready to edit.
+    background.add_task(build_clip_metadata, clip_id, new_name, False)
     add_notification(owner, "clip", clip_id, slug, file.filename or "Clip", f"/clip/{clip_id}/edit")
     return {"id": clip_id, "filename": new_name}
 
@@ -988,6 +991,14 @@ async def edit_page(request: Request, clip_id: int, user: dict = Depends(require
          "error": request.query_params.get("error")})
 
 
+@app.get("/clip/{clip_id}/status")
+async def clip_status(clip_id: int, user: dict = Depends(require_user)):
+    conn = get_db()
+    clip = _load_owned_clip(conn, clip_id, user)
+    conn.close()
+    return {"ready": bool(clip["ready"]), "status": clip["status"]}
+
+
 @app.post("/clip/{clip_id}/trim")
 async def trim_clip(background: BackgroundTasks, clip_id: int, start: str = Form(...),
                     end: str = Form(...), save_as: str = Form("save"),
@@ -1031,7 +1042,7 @@ async def trim_clip(background: BackgroundTasks, clip_id: int, start: str = Form
         new_slug = uuid.uuid4().hex[:8]
         cur = conn.execute(
             "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, "
-            "thumbnail, duration, user_id) VALUES (?, ?, ?, 'edited', 'private', ?, ?, ?, ?)",
+            "thumbnail, duration, ready, user_id) VALUES (?, ?, ?, 'edited', 'private', ?, ?, ?, 1, ?)",
             (out_name, out_name, f"{base_name} (copy)", new_slug, thumbnail, duration, clip["user_id"]))
         conn.commit()
         new_id = cur.lastrowid
@@ -1233,14 +1244,15 @@ async def _ingest_web(background, request, original_name, owner, place):
         await place(RAW_DIR / new_name)
         conn = get_db()
         cur = conn.execute(
-            "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, duration, user_id) "
-            "VALUES (?, ?, ?, 'raw', 'private', ?, 0, ?)",
+            "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, duration, ready, user_id) "
+            "VALUES (?, ?, ?, 'raw', 'private', ?, 0, 0, ?)",
             (new_name, new_name, original_name, slug, owner_id))
         conn.commit()
         clip_id = cur.lastrowid
         conn.close()
-        background.add_task(build_clip_metadata, clip_id, new_name)
-        return {"ok": True, "kind": "clip", "edit": f"/clip/{clip_id}/edit"}
+        background.add_task(build_clip_metadata, clip_id, new_name, True)
+        return {"ok": True, "kind": "clip", "id": clip_id,
+                "edit": f"/clip/{clip_id}/edit", "status": f"/clip/{clip_id}/status"}
 
     if kind == "image":
         await place(IMAGES_DIR / new_name)
@@ -1341,13 +1353,13 @@ async def upload_finish(request: Request, background: BackgroundTasks,
         slug = uuid.uuid4().hex[:8]
         conn = get_db()
         cur = conn.execute(
-            "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, duration, user_id) "
-            "VALUES (?, ?, ?, 'raw', 'private', ?, 0, ?)",
+            "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, duration, ready, user_id) "
+            "VALUES (?, ?, ?, 'raw', 'private', ?, 0, 0, ?)",
             (new_name, new_name, filename, slug, owner))
         conn.commit()
         clip_id = cur.lastrowid
         conn.close()
-        background.add_task(build_clip_metadata, clip_id, new_name)
+        background.add_task(build_clip_metadata, clip_id, new_name, False)
         add_notification(owner, "clip", clip_id, slug, filename or "Clip", f"/clip/{clip_id}/edit")
         return {"id": clip_id, "filename": new_name}
 
