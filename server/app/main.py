@@ -191,6 +191,16 @@ def is_authenticated(request: Request) -> bool:
     return bool(request.session.get("uid"))
 
 
+def _back(request: Request, fallback: str):
+    """Redirect to the same-origin path of the referer, else a fallback."""
+    ref = request.headers.get("referer")
+    if ref:
+        p = urllib.parse.urlparse(ref)
+        if p.path:
+            return RedirectResponse(p.path + (("?" + p.query) if p.query else ""), status_code=303)
+    return RedirectResponse(fallback, status_code=303)
+
+
 def owns_or_admin(user, row) -> bool:
     if user and user.get("is_admin"):
         return True
@@ -581,6 +591,9 @@ def init_db():
     if admin:
         for t in ("clips", "images", "uploads"):
             conn.execute(f"UPDATE {t} SET user_id = ? WHERE user_id IS NULL", (admin["id"],))
+    # Every clip should have a slug so it always has a (visibility-gated) view URL.
+    for row in conn.execute("SELECT id FROM clips WHERE slug IS NULL").fetchall():
+        conn.execute("UPDATE clips SET slug = ? WHERE id = ?", (uuid.uuid4().hex[:8], row["id"]))
     conn.commit()
     conn.close()
 
@@ -824,11 +837,12 @@ async def upload_video(request: Request, background: BackgroundTasks, file: Uplo
     new_name = f"{uuid.uuid4().hex}{ext}"
     await _save_upload(file, RAW_DIR / new_name)
     owner = admin_user_id()
+    slug = uuid.uuid4().hex[:8]
     conn = get_db()
     cur = conn.execute(
-        "INSERT INTO clips (filename, source_filename, display_name, status, visibility, duration, user_id) "
-        "VALUES (?, ?, ?, 'raw', 'private', 0, ?)",
-        (new_name, new_name, file.filename, owner))
+        "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, duration, user_id) "
+        "VALUES (?, ?, ?, 'raw', 'private', ?, 0, ?)",
+        (new_name, new_name, file.filename, slug, owner))
     conn.commit()
     clip_id = cur.lastrowid
     conn.close()
@@ -1019,7 +1033,7 @@ async def set_clip_visibility(request: Request, background: BackgroundTasks, cli
         background.add_task(build_clip_hls, clip_id)
     if request.headers.get("accept", "").startswith("application/json"):
         return JSONResponse({"ok": True, "visibility": value, "slug": slug})
-    return RedirectResponse(url=f"/clip/{clip_id}/edit", status_code=303)
+    return _back(request, f"/clip/{clip_id}/edit")
 
 
 @app.post("/clip/{clip_id}/delete")
@@ -1093,7 +1107,7 @@ async def share_image(request: Request, slug: str):
 
 
 @app.post("/image/{image_id}/visibility")
-async def set_image_visibility(image_id: int, value: str = Form(...), user: dict = Depends(require_user)):
+async def set_image_visibility(request: Request, image_id: int, value: str = Form(...), user: dict = Depends(require_user)):
     if value not in VISIBILITIES:
         raise HTTPException(400, "Bad visibility")
     conn = get_db()
@@ -1104,7 +1118,7 @@ async def set_image_visibility(image_id: int, value: str = Form(...), user: dict
     conn.execute("UPDATE images SET visibility = ? WHERE id = ?", (value, image_id))
     conn.commit()
     conn.close()
-    return RedirectResponse(url="/library", status_code=303)
+    return _back(request, "/library")
 
 
 @app.post("/image/{image_id}/delete")
@@ -1172,7 +1186,7 @@ async def rename_upload(upload_id: int, name: str = Form(...), user: dict = Depe
 
 
 @app.post("/uploads/{upload_id}/visibility")
-async def set_upload_visibility(background: BackgroundTasks, upload_id: int,
+async def set_upload_visibility(request: Request, background: BackgroundTasks, upload_id: int,
                                 value: str = Form(...), user: dict = Depends(require_user)):
     if value not in VISIBILITIES:
         raise HTTPException(400, "Bad visibility")
@@ -1184,7 +1198,7 @@ async def set_upload_visibility(background: BackgroundTasks, upload_id: int,
     if up["kind"] == "video" and value in ("unlisted", "public") \
             and (up["hls_status"] or "none") not in ("pending", "ready"):
         background.add_task(build_upload_hls, upload_id)
-    return RedirectResponse(url="/", status_code=303)
+    return _back(request, "/library")
 
 
 @app.post("/uploads/{upload_id}/delete")

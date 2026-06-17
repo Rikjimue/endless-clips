@@ -2,24 +2,34 @@
 {% block title %}Library — Endless Clips{% endblock %}
 {% block head_extra %}
 <style>
-  .lib-toolbar { display: flex; gap: 12px; align-items: center; margin: 6px 0 18px; }
+  .lib-toolbar { display: flex; gap: 12px; align-items: center; margin: 0 0 18px; }
   .lib-toolbar .input { flex: 1; max-width: 340px; }
   .card.is-hidden { display: none; }
 </style>
 {% endblock %}
 {% block body %}
 {% include "_nav.html" %}
+
+{% macro vis(action, current) %}
+<form action="{{ action }}" method="post" class="vis-select">
+  <select name="value" onchange="this.form.submit()" aria-label="Visibility">
+    {% for v in ['private','unlisted','public'] %}
+    <option value="{{ v }}" {{ 'selected' if current == v }}>{{ v|capitalize }}</option>
+    {% endfor %}
+  </select>
+</form>
+{% endmacro %}
+
 <div class="shell">
   <div class="content-header">
     <h1>Library</h1>
-    <span class="meta">{{ clips|length }} clip{{ 's' if clips|length != 1 else '' }}</span>
+    <div style="display:flex; align-items:center; gap:12px;">
+      <span class="meta">{{ clips|length }} clip{{ 's' if clips|length != 1 else '' }}</span>
+      <button class="btn btn-primary btn-sm" onclick="triggerUpload()">Upload</button>
+      <input id="upload-input" type="file" multiple hidden data-after="reload">
+    </div>
   </div>
-
-  <div class="dropzone" data-list="#progress-list" role="button" tabindex="0" aria-label="Upload a file">
-    <strong>Drop a file to upload</strong>, or click to browse
-    <input type="file" multiple hidden>
-  </div>
-  <div class="upload-progress-list" id="progress-list"></div>
+  <div class="upload-progress-list" id="upload-progress-list"></div>
 
   <div class="lib-toolbar">
     <input class="input" id="lib-search" placeholder="Search clips" oninput="filterLibrary(this.value)" aria-label="Search clips">
@@ -29,9 +39,8 @@
   {% if clips %}
   <div class="grid" data-section="clips">
     {% for clip in clips %}
-    {% set sub = 'edited' if clip.status == 'edited' else 'raw' %}
     <div class="card" data-name="{{ (clip.display_name or clip.filename) | lower }}">
-      <div class="thumb playable" data-src="/media/{{ sub }}/{{ clip.filename }}">
+      <div class="thumb openable" data-href="/c/{{ clip.slug }}">
         {% if clip.thumbnail %}<img src="/media/thumbnails/{{ clip.thumbnail }}" alt="">{% else %}<div class="thumb-placeholder">PROCESSING</div>{% endif %}
         <div class="play-btn"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="rgba(8,9,11,0.55)" stroke="#fff" stroke-opacity="0.55"/><path d="M10 8.3l5.2 3.7-5.2 3.7z" fill="#fff"/></svg></div>
         <span class="vis-pill vis-{{ clip.visibility }}">{{ clip.visibility }}</span>
@@ -42,25 +51,18 @@
         <div class="card-meta">{{ clip.created_at }}</div>
         <div class="actions">
           <a href="/clip/{{ clip.id }}/edit" class="btn btn-primary btn-sm">Edit</a>
-          {% if clip.visibility != 'private' and clip.slug %}<button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/c/{{ clip.slug }}')">Copy link</button>{% endif %}
+          {% if clip.visibility != 'private' %}<button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/c/{{ clip.slug }}')">Copy link</button>{% endif %}
           <form action="/clip/{{ clip.id }}/delete" method="post" onsubmit="return confirm('Delete this clip and its files? This cannot be undone.')">
             <button type="submit" class="btn btn-danger btn-sm">Delete</button>
           </form>
         </div>
-        <div class="vis-control">
-          {% for v in ['private','unlisted','public'] %}
-          <form action="/clip/{{ clip.id }}/visibility" method="post">
-            <input type="hidden" name="value" value="{{ v }}">
-            <button type="submit" class="btn btn-outline btn-sm" aria-pressed="{{ 'true' if clip.visibility == v else 'false' }}">{{ v }}</button>
-          </form>
-          {% endfor %}
-        </div>
+        {{ vis('/clip/' ~ clip.id ~ '/visibility', clip.visibility) }}
       </div>
     </div>
     {% endfor %}
   </div>
   {% else %}
-  <div class="empty">No clips yet. Recordings from your capture PC land here automatically, or drop a file above.</div>
+  <div class="empty">No clips yet. Recordings from your capture PC land here automatically.</div>
   {% endif %}
 
   {% if images %}
@@ -68,26 +70,19 @@
   <div class="grid">
     {% for image in images %}
     <div class="card card-compact">
-      <div class="thumb"><img src="/media/images/{{ image.filename }}" alt="">
+      <div class="thumb openable" data-href="/i/{{ image.slug }}">
+        <img src="/media/images/{{ image.filename }}" alt="">
         <span class="vis-pill vis-{{ image.visibility }}">{{ image.visibility }}</span>
       </div>
       <div class="card-body">
         <div class="card-meta">{{ image.created_at }}</div>
         <div class="actions">
-          <a href="/i/{{ image.slug }}" class="btn btn-primary btn-sm" target="_blank" rel="noopener">Open</a>
-          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/i/{{ image.slug }}')">Copy</button>
+          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/i/{{ image.slug }}')">Copy link</button>
           <form action="/image/{{ image.id }}/delete" method="post" onsubmit="return confirm('Delete this screenshot?')">
             <button type="submit" class="btn btn-danger btn-sm">Delete</button>
           </form>
         </div>
-        <div class="vis-control">
-          {% for v in ['private','unlisted','public'] %}
-          <form action="/image/{{ image.id }}/visibility" method="post">
-            <input type="hidden" name="value" value="{{ v }}">
-            <button type="submit" class="btn btn-outline btn-sm" aria-pressed="{{ 'true' if image.visibility == v else 'false' }}">{{ v }}</button>
-          </form>
-          {% endfor %}
-        </div>
+        {{ vis('/image/' ~ image.id ~ '/visibility', image.visibility) }}
       </div>
     </div>
     {% endfor %}
@@ -99,7 +94,7 @@
   <div class="grid">
     {% for u in uploads %}
     <div class="card {{ 'card-compact' if u.kind != 'video' }}">
-      <div class="thumb {{ 'playable' if u.kind == 'video' }}" {% if u.kind == 'video' %}data-src="/media/uploads/{{ u.filename }}"{% endif %}>
+      <div class="thumb openable" data-href="/u/{{ u.slug }}">
         {% if u.kind == 'video' and u.thumbnail %}<img src="/media/thumbnails/{{ u.thumbnail }}" alt="">
         {% elif u.kind == 'image' %}<img src="/media/uploads/{{ u.filename }}" alt="">
         {% else %}<div class="thumb-placeholder">{{ (u.original_name.split('.')[-1] if '.' in u.original_name else 'FILE') | upper }}</div>{% endif %}
@@ -110,20 +105,12 @@
         <div class="card-title renamable" data-id="{{ u.id }}" data-kind="upload">{{ u.display_name or u.original_name }}</div>
         <div class="card-meta">{{ u.created_at }}</div>
         <div class="actions">
-          {% if u.kind != 'video' %}<a href="/u/{{ u.slug }}" class="btn btn-primary btn-sm" target="_blank" rel="noopener">Open</a>{% endif %}
-          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/u/{{ u.slug }}')">Copy</button>
+          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/u/{{ u.slug }}')">Copy link</button>
           <form action="/uploads/{{ u.id }}/delete" method="post" onsubmit="return confirm('Delete this file?')">
             <button type="submit" class="btn btn-danger btn-sm">Delete</button>
           </form>
         </div>
-        <div class="vis-control">
-          {% for v in ['private','unlisted','public'] %}
-          <form action="/uploads/{{ u.id }}/visibility" method="post">
-            <input type="hidden" name="value" value="{{ v }}">
-            <button type="submit" class="btn btn-outline btn-sm" aria-pressed="{{ 'true' if u.visibility == v else 'false' }}">{{ v }}</button>
-          </form>
-          {% endfor %}
-        </div>
+        {{ vis('/uploads/' ~ u.id ~ '/visibility', u.visibility) }}
       </div>
     </div>
     {% endfor %}
@@ -140,4 +127,5 @@ function filterLibrary(q) {
   });
 }
 </script>
+<div class="drop-overlay" id="drop-overlay">Drop to upload</div>
 {% endblock %}

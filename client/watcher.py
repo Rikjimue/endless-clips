@@ -26,6 +26,8 @@ FFMPEG_PATH = os.environ.get(
 SERVER = os.environ.get("CLIPS_SERVER", "http://192.168.1.248:8000")
 VIDEO_UPLOAD_URL = f"{SERVER}/upload"
 IMAGE_UPLOAD_URL = f"{SERVER}/upload-image"
+UPLOAD_TOKEN = os.environ.get("CLIPS_UPLOAD_TOKEN", "7C4A3B4793D3E227EE49C12C58FC0BEC")
+AUTH_HEADERS = {"X-Upload-Token": UPLOAD_TOKEN} if UPLOAD_TOKEN else {}
 
 REMUX_TO_MP4 = os.environ.get("CLIPS_REMUX", "1") == "1"
 # Delete local files once the server confirms the upload. This is the behaviour
@@ -114,7 +116,7 @@ def upload_video(path: Path) -> bool:
     try:
         with open(path, "rb") as f:
             files = {"file": (path.name, f, "video/mp4")}
-            resp = session.post(VIDEO_UPLOAD_URL, files=files, timeout=600)
+            resp = session.post(VIDEO_UPLOAD_URL, files=files, headers=AUTH_HEADERS, timeout=600)
         resp.raise_for_status()
         log(f"Uploaded video {path.name} ({resp.status_code})")
         return True
@@ -128,7 +130,7 @@ def upload_image(path: Path):
         with open(path, "rb") as f:
             mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
             files = {"file": (path.name, f, mime)}
-            resp = session.post(IMAGE_UPLOAD_URL, files=files, timeout=120)
+            resp = session.post(IMAGE_UPLOAD_URL, files=files, headers=AUTH_HEADERS, timeout=120)
         resp.raise_for_status()
         link = resp.json().get("url")
         if link:
