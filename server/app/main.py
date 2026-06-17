@@ -86,8 +86,8 @@ CSP = (
 )
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-templates = Jinja2Templates(directory="templates")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -1337,7 +1337,7 @@ async def share_upload(request: Request, slug: str):
 
 
 @app.get("/notifications/poll")
-async def notifications_poll(after: int | None = None, user: dict = Depends(require_user)):
+async def notifications_poll(after: int = None, user: dict = Depends(require_user)):
     conn = get_db()
     if after is None:
         # Baseline call: tell the client the current high-water mark, no items.
