@@ -244,6 +244,15 @@ form { margin: 0; }
 .loading-spin { width: 34px; height: 34px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
 .loading-msg { font-family: 'Space Grotesk', sans-serif; font-size: 14px; color: var(--text-dim); }
 
+/* Confirm modal */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 2200; padding: 16px; }
+.modal-overlay.show { display: flex; }
+.modal { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px; width: 100%; max-width: 360px; box-shadow: 0 24px 60px -20px rgba(0,0,0,0.8); }
+.modal h3 { margin: 0 0 8px; font-family: 'Space Grotesk', sans-serif; font-size: 16px; }
+.modal .confirm-text { margin: 0; font-size: 13.5px; color: var(--text-dim); line-height: 1.55; }
+.modal-actions { display: flex; gap: 8px; margin-top: 18px; justify-content: flex-end; }
+.modal-actions .btn { min-width: 88px; }
+
 @media (max-width: 600px) {
   .topbar-inner { padding: 14px 16px; flex-wrap: wrap; gap: 8px; }
   .shell { padding: 22px 16px 56px; }
@@ -266,6 +275,17 @@ form { margin: 0; }
   <img src="/static/favicon.png" alt="" class="loading-logo">
   <div class="loading-spin"></div>
   <div class="loading-msg" id="loading-msg">Working…</div>
+</div>
+
+<div class="modal-overlay" id="confirm-modal" onclick="if(event.target===this)closeConfirm()">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <h3 id="confirm-title">Are you sure?</h3>
+    <p class="confirm-text" id="confirm-text"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline btn-sm" id="confirm-cancel">Cancel</button>
+      <button type="button" class="btn btn-danger btn-sm" id="confirm-ok">Delete</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -383,7 +403,13 @@ function startRename(t) {
   input.addEventListener('blur', () => finish(true));
 }
 
-/* ---- Upload (small button + drag anywhere on the page) ---- */
+/* ---- Upload (small button + drag; chunked to stay under proxy body caps) ---- */
+var CHUNK_BYTES = 90 * 1024 * 1024;  // keep each request under the 100MB Cloudflare cap
+function uuidish() {
+  var s = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+    : (Date.now().toString(16) + Math.random().toString(16).slice(2));
+  return s.replace(/[^0-9a-fA-F-]/g, '');
+}
 function uploadFile(file, list, onDone) {
   const item = document.createElement('div');
   item.className = 'upload-progress-item';
@@ -392,19 +418,46 @@ function uploadFile(file, list, onDone) {
   list.appendChild(item);
   const bar = item.querySelector('.progress > i');
   const pct = item.querySelector('.up-pct');
+  const fail = (status) => { pct.textContent = status === 413 ? 'Too large' : (status === 401 ? 'Sign in' : 'Failed'); pct.className = 'up-pct failed'; onDone(null, status || 0); };
+  const done = (data, status) => { bar.style.width = '100%'; pct.textContent = 'Done'; pct.className = 'up-pct done'; onDone(data, status); };
+
+  if (file.size > CHUNK_BYTES) { uploadChunked(file, bar, pct, done, fail); return; }
+
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/uploads/add');
-  xhr.upload.onprogress = (e) => {
-    if (e.lengthComputable) { const p = Math.round((e.loaded / e.total) * 100); bar.style.width = p + '%'; pct.textContent = p + '%'; }
-  };
-  xhr.onload = () => {
-    let data = null; try { data = JSON.parse(xhr.responseText); } catch (e) {}
-    if (xhr.status === 200) { bar.style.width = '100%'; pct.textContent = 'Done'; pct.className = 'up-pct done'; }
-    else { pct.textContent = xhr.status === 413 ? 'Too large' : (xhr.status === 401 ? 'Sign in' : 'Failed'); pct.className = 'up-pct failed'; }
-    onDone(data, xhr.status);
-  };
-  xhr.onerror = () => { pct.textContent = 'Failed'; pct.className = 'up-pct failed'; onDone(null, 0); };
+  xhr.upload.onprogress = (e) => { if (e.lengthComputable) { const p = Math.round((e.loaded / e.total) * 100); bar.style.width = p + '%'; pct.textContent = p + '%'; } };
+  xhr.onload = () => { let data = null; try { data = JSON.parse(xhr.responseText); } catch (e) {} if (xhr.status === 200) done(data, 200); else fail(xhr.status); };
+  xhr.onerror = () => fail(0);
   const fd = new FormData(); fd.append('file', file); xhr.send(fd);
+}
+async function uploadChunked(file, bar, pct, done, fail) {
+  const id = uuidish();
+  const total = Math.ceil(file.size / CHUNK_BYTES);
+  let sent = 0;
+  for (let i = 0; i < total; i++) {
+    const blob = file.slice(i * CHUNK_BYTES, Math.min(file.size, (i + 1) * CHUNK_BYTES));
+    const base = sent;
+    try {
+      await new Promise((res, rej) => {
+        const x = new XMLHttpRequest();
+        x.open('POST', '/uploads/chunk');
+        x.setRequestHeader('X-Upload-Id', id);
+        x.setRequestHeader('X-Chunk-Index', String(i));
+        x.upload.onprogress = (e) => { if (e.lengthComputable) { const p = Math.round((base + e.loaded) / file.size * 100); bar.style.width = p + '%'; pct.textContent = p + '%'; } };
+        x.onload = () => x.status === 200 ? res() : rej(x.status);
+        x.onerror = () => rej(0);
+        x.send(blob);
+      });
+    } catch (st) { fail(st); return; }
+    sent += blob.size;
+  }
+  try {
+    const fd = new FormData();
+    fd.append('upload_id', id); fd.append('filename', file.name); fd.append('target', 'web');
+    const r = await fetch('/uploads/finish', { method: 'POST', body: fd });
+    let data = null; try { data = await r.json(); } catch (e) {}
+    if (r.ok) done(data, 200); else fail(r.status);
+  } catch (e) { fail(0); }
 }
 
 function setupUpload() {
@@ -412,18 +465,26 @@ function setupUpload() {
   if (!input) return;  // upload not enabled on this page
   const list = document.getElementById('upload-progress-list');
   const overlay = document.getElementById('drop-overlay');
+  const box = document.querySelector('.dropzone');
   const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
 
   input.addEventListener('change', () => handle(input.files));
-  let depth = 0;
-  window.addEventListener('dragenter', (e) => { if (hasFiles(e)) { depth++; if (overlay) overlay.classList.add('show'); } });
-  window.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
-  window.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (depth === 0 && overlay) overlay.classList.remove('show'); });
-  window.addEventListener('drop', (e) => {
-    if (!hasFiles(e)) return;
-    e.preventDefault(); depth = 0; if (overlay) overlay.classList.remove('show');
-    handle(e.dataTransfer.files);
-  });
+
+  // Unauthenticated home: the visible drop box is its own target — no page overlay.
+  if (box) {
+    box.addEventListener('dragover', (e) => { e.preventDefault(); box.classList.add('dragover'); });
+    box.addEventListener('dragleave', () => box.classList.remove('dragover'));
+    box.addEventListener('drop', (e) => { e.preventDefault(); box.classList.remove('dragover'); handle(e.dataTransfer.files); });
+  }
+
+  // Full-page drag overlay only where one exists (the authenticated Library).
+  if (overlay) {
+    let depth = 0;
+    window.addEventListener('dragenter', (e) => { if (hasFiles(e)) { depth++; overlay.classList.add('show'); } });
+    window.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+    window.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (depth === 0) overlay.classList.remove('show'); });
+    window.addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); depth = 0; overlay.classList.remove('show'); handle(e.dataTransfer.files); });
+  }
 
   function handle(files) {
     if (!files.length) return;
@@ -436,9 +497,9 @@ function setupUpload() {
         setTimeout(hideDropnote, 2000);
         if (anyFail) return;
         if (files.length === 1 && lastData) {
-          if (lastData.kind === 'clip') { window.location.href = lastData.edit; }            // video -> trim editor
-          else if (lastData.kind === 'image') { openLightbox(lastData.src, { link: lastData.view, reloadOnClose: true }); }  // screenshot -> window
-          else { window.location.href = lastData.view; }                                       // file / anon video -> view
+          if (lastData.kind === 'clip') { window.location.href = lastData.edit; }
+          else if (lastData.kind === 'image') { openLightbox(lastData.src, { link: lastData.view, reloadOnClose: true }); }
+          else { window.location.href = lastData.view; }
         } else {
           setTimeout(() => location.reload(), 500);
         }
@@ -447,6 +508,33 @@ function setupUpload() {
   }
 }
 function triggerUpload() { const i = document.getElementById('upload-input'); if (i) i.click(); }
+
+/* ---- Styled confirm (replaces window.confirm on delete/discard forms) ---- */
+let _confirmForm = null;
+function closeConfirm() { document.getElementById('confirm-modal').classList.remove('show'); _confirmForm = null; }
+function wireConfirms() {
+  document.querySelectorAll('form[data-confirm]').forEach((f) => {
+    if (f._confirmWired) return; f._confirmWired = true;
+    f.addEventListener('submit', (e) => {
+      if (f._confirmed) return;       // programmatic submit after OK
+      e.preventDefault();
+      _confirmForm = f;
+      document.getElementById('confirm-text').textContent = f.getAttribute('data-confirm');
+      document.getElementById('confirm-ok').textContent = f.getAttribute('data-confirm-ok') || 'Delete';
+      document.getElementById('confirm-modal').classList.add('show');
+    });
+  });
+}
+function initConfirmModal() {
+  const ok = document.getElementById('confirm-ok');
+  const cancel = document.getElementById('confirm-cancel');
+  if (ok) ok.addEventListener('click', () => {
+    const f = _confirmForm; closeConfirm();
+    if (f) { f._confirmed = true; if (f.requestSubmit) f.requestSubmit(); else f.submit(); }
+  });
+  if (cancel) cancel.addEventListener('click', closeConfirm);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeConfirm(); });
+}
 
 /* ---- Push notifications (capture-PC uploads) ---- */
 function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
@@ -495,6 +583,8 @@ document.addEventListener('DOMContentLoaded', () => {
   enableInlineRename();
   setupUpload();
   startNotifications();
+  initConfirmModal();
+  wireConfirms();
 });
 </script>
 </body>

@@ -31,9 +31,10 @@ IMAGES_DIR = DATA_DIR / "images"
 THUMBNAIL_DIR = DATA_DIR / "thumbnails"
 UPLOADS_DIR = DATA_DIR / "uploads"
 HLS_DIR = DATA_DIR / "hls"
+TMP_DIR = DATA_DIR / "tmp"
 DB_PATH = DATA_DIR / "clips.db"
 
-for d in (RAW_DIR, EDITED_DIR, IMAGES_DIR, THUMBNAIL_DIR, UPLOADS_DIR, HLS_DIR):
+for d in (RAW_DIR, EDITED_DIR, IMAGES_DIR, THUMBNAIL_DIR, UPLOADS_DIR, HLS_DIR, TMP_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 # ---------- Config ----------
@@ -127,8 +128,9 @@ def client_ip(request: Request) -> str:
 @app.middleware("http")
 async def gate(request: Request, call_next):
     path = request.url.path
-    # Skip the generic flood limiter for static/media (HLS pulls many segments).
-    if not (path.startswith("/media") or path.startswith("/static")):
+    # Skip the generic flood limiter for static/media (HLS pulls many segments)
+    # and chunk uploads (a single large file is many sequential requests).
+    if not (path.startswith("/media") or path.startswith("/static") or path == "/uploads/chunk"):
         if not rate_ok(f"g:{client_ip(request)}", GLOBAL_RATE_PER_MIN, 60):
             return JSONResponse({"detail": "Too many requests"}, status_code=429)
     resp = await call_next(request)
@@ -674,6 +676,15 @@ def add_notification(user_id, kind, ref_id, slug, name, url, src=None):
 init_db()
 backfill_metadata()
 
+# Clear orphaned chunk-upload temp files (failed/abandoned resumable uploads).
+try:
+    cutoff = time.time() - 12 * 3600
+    for p in TMP_DIR.glob("*.part"):
+        if p.stat().st_mtime < cutoff:
+            p.unlink(missing_ok=True)
+except Exception:
+    pass
+
 
 # ---------- Upload helper ----------
 
@@ -1082,7 +1093,7 @@ async def set_clip_visibility(request: Request, background: BackgroundTasks, cli
 
 
 @app.post("/clip/{clip_id}/delete")
-async def delete_clip(clip_id: int, user: dict = Depends(require_user)):
+async def delete_clip(request: Request, clip_id: int, user: dict = Depends(require_user)):
     conn = get_db()
     clip = _load_owned_clip(conn, clip_id, user)
     for name in {clip["filename"], clip["source_filename"]}:
@@ -1100,7 +1111,7 @@ async def delete_clip(clip_id: int, user: dict = Depends(require_user)):
     conn.execute("DELETE FROM clips WHERE id = ?", (clip_id,))
     conn.commit()
     conn.close()
-    return RedirectResponse(url="/library", status_code=303)
+    return _back(request, "/library")
 
 
 @app.post("/clip/{clip_id}/publish")
@@ -1194,7 +1205,7 @@ async def set_image_visibility(request: Request, image_id: int, value: str = For
 
 
 @app.post("/image/{image_id}/delete")
-async def delete_image(image_id: int, user: dict = Depends(require_user)):
+async def delete_image(request: Request, image_id: int, user: dict = Depends(require_user)):
     conn = get_db()
     row = conn.execute("SELECT * FROM images WHERE id = ?", (image_id,)).fetchone()
     if row and owns_or_admin(user, row):
@@ -1204,28 +1215,22 @@ async def delete_image(image_id: int, user: dict = Depends(require_user)):
         conn.execute("DELETE FROM images WHERE id = ?", (image_id,))
         conn.commit()
     conn.close()
-    return RedirectResponse(url="/library", status_code=303)
+    return _back(request, "/library")
 
 
 # ---------- Manual uploads ----------
 
-@app.post("/uploads/add")
-async def add_upload(request: Request, background: BackgroundTasks, file: UploadFile = File(...)):
-    if not rate_ok(f"up:{client_ip(request)}", 120, 60):
-        raise HTTPException(429, "Too many uploads")
-    owner = current_user(request)
-    if REQUIRE_LOGIN_UPLOAD and not owner:
-        raise HTTPException(401, "Sign in to upload")
-    original_name = file.filename or "file"
-    ext = Path(original_name).suffix.lower()
+async def _ingest_web(background, request, original_name, owner, place):
+    """Create the right record from an incoming web upload. `place(dest)` is an
+    awaitable that writes the bytes to dest (used by both single and chunked paths)."""
     kind = detect_kind(original_name)
+    ext = Path(original_name).suffix.lower()
     owner_id = owner["id"] if owner else None
     new_name = f"{uuid.uuid4().hex}{ext}"
     slug = uuid.uuid4().hex[:8]
 
-    # Signed-in video upload -> a clip, then straight to the trim editor (Medal-style).
     if kind == "video" and owner:
-        await _save_upload(file, RAW_DIR / new_name)
+        await place(RAW_DIR / new_name)
         conn = get_db()
         cur = conn.execute(
             "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, duration, user_id) "
@@ -1237,9 +1242,8 @@ async def add_upload(request: Request, background: BackgroundTasks, file: Upload
         background.add_task(build_clip_metadata, clip_id, new_name)
         return {"ok": True, "kind": "clip", "edit": f"/clip/{clip_id}/edit"}
 
-    # Any image -> the images table; the client opens it in the in-page lightbox.
     if kind == "image":
-        await _save_upload(file, IMAGES_DIR / new_name)
+        await place(IMAGES_DIR / new_name)
         conn = get_db()
         conn.execute(
             "INSERT INTO images (filename, display_name, slug, visibility, user_id) VALUES (?,?,?, 'unlisted', ?)",
@@ -1249,8 +1253,7 @@ async def add_upload(request: Request, background: BackgroundTasks, file: Upload
         return {"ok": True, "kind": "image", "slug": slug,
                 "src": f"/media/images/{new_name}", "view": f"/i/{slug}"}
 
-    # Everything else (incl. anonymous video) -> uploads table + standalone view screen.
-    await _save_upload(file, UPLOADS_DIR / new_name)
+    await place(UPLOADS_DIR / new_name)
     conn = get_db()
     cur = conn.execute(
         "INSERT INTO uploads (filename, original_name, display_name, kind, slug, visibility, user_id) "
@@ -1263,6 +1266,101 @@ async def add_upload(request: Request, background: BackgroundTasks, file: Upload
     if kind == "video":
         background.add_task(build_upload_hls, upload_id)
     return {"ok": True, "kind": kind, "slug": slug, "view": f"/u/{slug}"}
+
+
+@app.post("/uploads/add")
+async def add_upload(request: Request, background: BackgroundTasks, file: UploadFile = File(...)):
+    if not rate_ok(f"up:{client_ip(request)}", 120, 60):
+        raise HTTPException(429, "Too many uploads")
+    owner = current_user(request)
+    if REQUIRE_LOGIN_UPLOAD and not owner:
+        raise HTTPException(401, "Sign in to upload")
+    original_name = file.filename or "file"
+    return await _ingest_web(background, request, original_name, owner,
+                             lambda dest: _save_upload(file, dest))
+
+
+# ---- Chunked uploads (keeps every request under the Cloudflare 100MB body cap) ----
+
+_UPLOAD_ID_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
+
+
+def _part_path(upload_id: str) -> Path:
+    if not upload_id or not _UPLOAD_ID_RE.match(upload_id):
+        raise HTTPException(400, "Bad upload id")
+    return TMP_DIR / f"{upload_id}.part"
+
+
+def _chunk_auth(request: Request) -> bool:
+    """True if this caller may upload. Capture-PC token or web session."""
+    if UPLOAD_TOKEN and secrets.compare_digest(request.headers.get("x-upload-token", ""), UPLOAD_TOKEN):
+        return True
+    if REQUIRE_LOGIN_UPLOAD and not is_authenticated(request):
+        raise HTTPException(401, "Sign in to upload")
+    return False
+
+
+@app.post("/uploads/chunk")
+async def upload_chunk(request: Request):
+    _chunk_auth(request)
+    if not rate_ok(f"up:{client_ip(request)}", 1200, 60):
+        raise HTTPException(429, "Too many requests")
+    dest = _part_path(request.headers.get("x-upload-id", ""))
+    size = dest.stat().st_size if dest.exists() else 0
+    try:
+        async with aiofiles.open(dest, "ab") as f:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(413, "Upload exceeds maximum size")
+                await f.write(chunk)
+    except HTTPException:
+        dest.unlink(missing_ok=True)
+        raise
+    return {"ok": True, "received": size}
+
+
+@app.post("/uploads/finish")
+async def upload_finish(request: Request, background: BackgroundTasks,
+                        upload_id: str = Form(...), filename: str = Form(...),
+                        target: str = Form("web")):
+    token_ok = bool(UPLOAD_TOKEN) and secrets.compare_digest(
+        request.headers.get("x-upload-token", ""), UPLOAD_TOKEN)
+    part = _part_path(upload_id)
+    if not part.exists():
+        raise HTTPException(400, "No upload data for that id")
+
+    # Capture-PC video -> a clip owned by admin (same result as /upload).
+    if token_ok and target == "clip":
+        ext = Path(filename).suffix.lower() or ".mp4"
+        new_name = f"{uuid.uuid4().hex}{ext}"
+        await run_in_threadpool(shutil.move, str(part), str(RAW_DIR / new_name))
+        owner = admin_user_id()
+        slug = uuid.uuid4().hex[:8]
+        conn = get_db()
+        cur = conn.execute(
+            "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, duration, user_id) "
+            "VALUES (?, ?, ?, 'raw', 'private', ?, 0, ?)",
+            (new_name, new_name, filename, slug, owner))
+        conn.commit()
+        clip_id = cur.lastrowid
+        conn.close()
+        background.add_task(build_clip_metadata, clip_id, new_name)
+        add_notification(owner, "clip", clip_id, slug, filename or "Clip", f"/clip/{clip_id}/edit")
+        return {"id": clip_id, "filename": new_name}
+
+    # Web context (cookie session), mirrors /uploads/add routing.
+    owner = current_user(request)
+    if REQUIRE_LOGIN_UPLOAD and not owner:
+        part.unlink(missing_ok=True)
+        raise HTTPException(401, "Sign in to upload")
+
+    async def place(dest):
+        await run_in_threadpool(shutil.move, str(part), str(dest))
+
+    return await _ingest_web(background, request, filename, owner, place)
 
 
 def _load_owned_upload(conn, upload_id, user):
@@ -1302,7 +1400,7 @@ async def set_upload_visibility(request: Request, background: BackgroundTasks, u
 
 
 @app.post("/uploads/{upload_id}/delete")
-async def delete_upload(upload_id: int, user: dict = Depends(require_user)):
+async def delete_upload(request: Request, upload_id: int, user: dict = Depends(require_user)):
     conn = get_db()
     row = _load_owned_upload(conn, upload_id, user)
     path = UPLOADS_DIR / row["filename"]
@@ -1316,7 +1414,7 @@ async def delete_upload(upload_id: int, user: dict = Depends(require_user)):
     conn.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
     conn.commit()
     conn.close()
-    return RedirectResponse(url="/", status_code=303)
+    return _back(request, "/library")
 
 
 @app.get("/u/{slug}")

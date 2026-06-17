@@ -1,6 +1,7 @@
 import os
 import time
 import subprocess
+import uuid
 from pathlib import Path
 
 import requests
@@ -23,10 +24,10 @@ FFMPEG_PATH = os.environ.get(
     r"C:\Users\rikji\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.1-full_build\bin\ffmpeg.exe",
 )
 
-SERVER = os.environ.get("CLIPS_SERVER", "http://192.168.1.248:8000")
+SERVER = os.environ.get("CLIPS_SERVER", "http://clips.jaioleeming.com")
 VIDEO_UPLOAD_URL = f"{SERVER}/upload"
 IMAGE_UPLOAD_URL = f"{SERVER}/upload-image"
-UPLOAD_TOKEN = os.environ.get("CLIPS_UPLOAD_TOKEN", "7C4A3B4793D3E227EE49C12C58FC0BEC")
+UPLOAD_TOKEN = os.environ.get("CLIPS_UPLOAD_TOKEN", "")
 AUTH_HEADERS = {"X-Upload-Token": UPLOAD_TOKEN} if UPLOAD_TOKEN else {}
 
 REMUX_TO_MP4 = os.environ.get("CLIPS_REMUX", "1") == "1"
@@ -113,10 +114,33 @@ def remux_to_mp4(path: Path) -> Path:
 
 
 def upload_video(path: Path) -> bool:
+    """Chunked upload so no single request exceeds the proxy body cap (Cloudflare 100MB)."""
+    chunk_url = f"{SERVER}/uploads/chunk"
+    finish_url = f"{SERVER}/uploads/finish"
+    upload_id = uuid.uuid4().hex
+    chunk_bytes = 90 * 1024 * 1024
     try:
+        size = path.stat().st_size
+        sent = 0
         with open(path, "rb") as f:
-            files = {"file": (path.name, f, "video/mp4")}
-            resp = session.post(VIDEO_UPLOAD_URL, files=files, headers=AUTH_HEADERS, timeout=600)
+            index = 0
+            while True:
+                data = f.read(chunk_bytes)
+                if not data:
+                    break
+                headers = dict(AUTH_HEADERS)
+                headers["X-Upload-Id"] = upload_id
+                headers["X-Chunk-Index"] = str(index)
+                headers["Content-Type"] = "application/octet-stream"
+                resp = session.post(chunk_url, data=data, headers=headers, timeout=600)
+                resp.raise_for_status()
+                sent += len(data)
+                index += 1
+                log(f"  {path.name}: {sent}/{size} bytes")
+        resp = session.post(
+            finish_url,
+            data={"upload_id": upload_id, "filename": path.name, "target": "clip"},
+            headers=AUTH_HEADERS, timeout=120)
         resp.raise_for_status()
         log(f"Uploaded video {path.name} ({resp.status_code})")
         return True

@@ -52,7 +52,7 @@
         <div class="actions">
           <a href="/clip/{{ clip.id }}/edit" class="btn btn-primary btn-sm">Edit</a>
           {% if clip.visibility != 'private' %}<button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/c/{{ clip.slug }}')">Copy link</button>{% endif %}
-          <form action="/clip/{{ clip.id }}/delete" method="post" onsubmit="return confirm('Delete this clip and its files? This cannot be undone.')">
+          <form action="/clip/{{ clip.id }}/delete" method="post" data-confirm="Delete this clip and its files? This cannot be undone.">
             <button type="submit" class="btn btn-danger btn-sm">Delete</button>
           </form>
         </div>
@@ -80,7 +80,7 @@
         <div class="actions">
           <a href="/image/{{ image.id }}/edit" class="btn btn-primary btn-sm">Edit</a>
           <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/i/{{ image.slug }}')">Copy</button>
-          <form action="/image/{{ image.id }}/delete" method="post" onsubmit="return confirm('Delete this screenshot?')">
+          <form action="/image/{{ image.id }}/delete" method="post" data-confirm="Delete this screenshot?">
             <button type="submit" class="btn btn-danger btn-sm">Delete</button>
           </form>
         </div>
@@ -108,7 +108,7 @@
         <div class="card-meta">{{ u.created_at }}</div>
         <div class="actions">
           <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/u/{{ u.slug }}')">Copy link</button>
-          <form action="/uploads/{{ u.id }}/delete" method="post" onsubmit="return confirm('Delete this file?')">
+          <form action="/uploads/{{ u.id }}/delete" method="post" data-confirm="Delete this file?">
             <button type="submit" class="btn btn-danger btn-sm">Delete</button>
           </form>
         </div>

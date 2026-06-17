@@ -1,1 +1,22 @@
-config.toml
+# Virtual environments
+venv/
+.venv/
+*/venv/
+*/.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Data / runtime files
+data/
+*.db
+
+# Editor/OS junk
+.vscode/
+.idea/
+*.log
+
+# Compiled python
+*/watcher.dist/
+*/watcher.build/
