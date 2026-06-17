@@ -70,14 +70,16 @@
   <div class="grid">
     {% for image in images %}
     <div class="card card-compact">
-      <div class="thumb openable" data-href="/i/{{ image.slug }}">
+      <div class="thumb lightboxable" data-full="/media/images/{{ image.filename }}" data-link="/i/{{ image.slug }}">
         <img src="/media/images/{{ image.filename }}" alt="">
         <span class="vis-pill vis-{{ image.visibility }}">{{ image.visibility }}</span>
       </div>
       <div class="card-body">
+        <div class="card-title renamable" data-id="{{ image.id }}" data-kind="image">{{ image.display_name or 'Screenshot' }}</div>
         <div class="card-meta">{{ image.created_at }}</div>
         <div class="actions">
-          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/i/{{ image.slug }}')">Copy link</button>
+          <a href="/image/{{ image.id }}/edit" class="btn btn-primary btn-sm">Edit</a>
+          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/i/{{ image.slug }}')">Copy</button>
           <form action="/image/{{ image.id }}/delete" method="post" onsubmit="return confirm('Delete this screenshot?')">
             <button type="submit" class="btn btn-danger btn-sm">Delete</button>
           </form>

@@ -201,7 +201,16 @@ form { margin: 0; }
 .drop-overlay { position: fixed; inset: 16px; border: 2px dashed var(--accent); border-radius: var(--radius); background: rgba(13,14,16,0.86); display: none; align-items: center; justify-content: center; z-index: 3000; color: var(--text); font-family: 'Space Grotesk', sans-serif; font-size: 20px; pointer-events: none; }
 .drop-overlay.show { display: flex; }
 
+/* Screenshot lightbox (in-page window) */
+.lightbox { position: fixed; inset: 0; background: rgba(8,9,11,0.9); display: none; align-items: center; justify-content: center; flex-direction: column; gap: 14px; z-index: 2500; padding: 28px; }
+.lightbox.show { display: flex; }
+.lightbox img { max-width: 92vw; max-height: 78vh; object-fit: contain; border: 1px solid var(--border); border-radius: var(--radius); background: #000; }
+.lightbox-bar { display: flex; gap: 8px; }
+.lightbox-close { position: absolute; top: 16px; right: 20px; font-size: 26px; line-height: 1; color: var(--text-dim); background: none; border: none; cursor: pointer; }
+.lightbox-close:hover { color: var(--text); }
+
 .kbd-hint { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
+.kbd { font-family: "JetBrains Mono", "IBM Plex Mono", monospace; font-size: 11px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; color: var(--text); }
 
 /* Toast (bottom) */
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--surface-2); border: 1px solid var(--border); color: var(--text); padding: 10px 16px; border-radius: var(--radius-sm); font-size: 13px; opacity: 0; transition: all 0.2s ease; pointer-events: none; z-index: 1000; }
@@ -224,6 +233,12 @@ form { margin: 0; }
 </head>
 <body>
 {% block body %}{% endblock %}
+
+<div class="lightbox" id="lightbox" onclick="if(event.target===this)closeLightbox()">
+  <button class="lightbox-close" onclick="closeLightbox()" aria-label="Close">&times;</button>
+  <img alt="Screenshot">
+  <div class="lightbox-bar"></div>
+</div>
 
 <script>
 /* ---- Notifications ---- */
@@ -258,12 +273,42 @@ function copyToClipboard(text) {
   } else { fallbackCopy(text, done); }
 }
 
-/* ---- Open in a new tab (clips & screenshots) ---- */
+/* ---- Open in a new tab (clips & files) / lightbox (screenshots) ---- */
 function enableOpenable() {
   document.querySelectorAll('.openable[data-href]').forEach((el) => {
     el.addEventListener('click', () => window.open(el.dataset.href, '_blank', 'noopener'));
   });
+  document.querySelectorAll('.lightboxable[data-full]').forEach((el) => {
+    el.addEventListener('click', () => openLightbox(el.dataset.full, { link: el.dataset.link }));
+  });
 }
+function openLightbox(src, opts) {
+  opts = opts || {};
+  const lb = document.getElementById('lightbox');
+  lb.querySelector('img').src = src;
+  const bar = lb.querySelector('.lightbox-bar');
+  bar.innerHTML = '';
+  if (opts.link) {
+    const link = opts.link.indexOf('http') === 0 ? opts.link : (location.origin + opts.link);
+    const copy = document.createElement('button');
+    copy.className = 'btn btn-outline btn-sm'; copy.textContent = 'Copy link';
+    copy.onclick = () => copyToClipboard(link);
+    const open = document.createElement('a');
+    open.className = 'btn btn-primary btn-sm'; open.href = link; open.target = '_blank'; open.rel = 'noopener';
+    open.textContent = 'Open page';
+    bar.appendChild(copy); bar.appendChild(open);
+  }
+  lb._reload = !!opts.reloadOnClose;
+  lb.classList.add('show');
+}
+function closeLightbox() {
+  const lb = document.getElementById('lightbox');
+  if (!lb) return;
+  lb.classList.remove('show');
+  lb.querySelector('img').src = '';
+  if (lb._reload) { lb._reload = false; location.reload(); }
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
 
 /* ---- Double-click to rename ---- */
 function enableInlineRename() {
@@ -284,7 +329,8 @@ function startRename(t) {
     if (save) {
       const v = input.value.trim();
       const fd = new FormData(); fd.append('name', v);
-      const url = kind === 'clip' ? `/clip/${id}/rename` : `/uploads/${id}/rename`;
+      const url = kind === 'clip' ? `/clip/${id}/rename`
+        : (kind === 'image' ? `/image/${id}/rename` : `/uploads/${id}/rename`);
       try {
         const res = await fetch(url, { method: 'POST', body: fd });
         if (res.ok) { const d = await res.json(); name = d.name || v || current; showToast('Renamed'); }
@@ -319,10 +365,10 @@ function uploadFile(file, list, onDone) {
     if (e.lengthComputable) { const p = Math.round((e.loaded / e.total) * 100); bar.style.width = p + '%'; pct.textContent = p + '%'; }
   };
   xhr.onload = () => {
-    let slug = null; try { slug = JSON.parse(xhr.responseText).slug; } catch (e) {}
+    let data = null; try { data = JSON.parse(xhr.responseText); } catch (e) {}
     if (xhr.status === 200) { bar.style.width = '100%'; pct.textContent = 'Done'; pct.className = 'up-pct done'; }
     else { pct.textContent = xhr.status === 413 ? 'Too large' : (xhr.status === 401 ? 'Sign in' : 'Failed'); pct.className = 'up-pct failed'; }
-    onDone(slug, xhr.status);
+    onDone(data, xhr.status);
   };
   xhr.onerror = () => { pct.textContent = 'Failed'; pct.className = 'up-pct failed'; onDone(null, 0); };
   const fd = new FormData(); fd.append('file', file); xhr.send(fd);
@@ -330,7 +376,7 @@ function uploadFile(file, list, onDone) {
 
 function setupUpload() {
   const input = document.getElementById('upload-input');
-  if (!input) return;  // upload not enabled on this page (e.g. signed-in users)
+  if (!input) return;  // upload not enabled on this page
   const list = document.getElementById('upload-progress-list');
   const overlay = document.getElementById('drop-overlay');
   const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
@@ -348,21 +394,19 @@ function setupUpload() {
 
   function handle(files) {
     if (!files.length) return;
-    const after = input.dataset.after || 'view';
-    let remaining = files.length, lastSlug = null, anyFail = false;
+    let remaining = files.length, lastData = null, anyFail = false;
     showDropnote(files.length > 1 ? `Uploading ${files.length} files…` : `Uploading ${files[0].name}…`, true);
-    [...files].forEach((file) => uploadFile(file, list, (slug, status) => {
-      if (slug) lastSlug = slug;
-      if (status !== 200) anyFail = true;
+    [...files].forEach((file) => uploadFile(file, list, (data, status) => {
+      if (status !== 200) anyFail = true; else lastData = data;
       if (--remaining === 0) {
         showDropnote(anyFail ? 'Some uploads failed' : 'Upload complete', false);
         setTimeout(hideDropnote, 2000);
-        if (anyFail) return;  // leave the list showing what failed
-        if (after === 'view' && files.length === 1 && lastSlug) {
-          // Anonymous: land on the view screen for what was just shared.
-          setTimeout(() => { window.location.href = '/u/' + lastSlug; }, 500);
+        if (anyFail) return;
+        if (files.length === 1 && lastData) {
+          if (lastData.kind === 'clip') { window.location.href = lastData.edit; }            // video -> trim editor
+          else if (lastData.kind === 'image') { openLightbox(lastData.src, { link: lastData.view, reloadOnClose: true }); }  // screenshot -> window
+          else { window.location.href = lastData.view; }                                       // file / anon video -> view
         } else {
-          // Library / multi-file: refresh so new items show up in place.
           setTimeout(() => location.reload(), 500);
         }
       }

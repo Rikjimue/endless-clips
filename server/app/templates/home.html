@@ -13,15 +13,15 @@
 <div class="shell">
   <div class="content-header">
     <h1>Home</h1>
-    {% if not authenticated %}
-    <button class="btn btn-primary btn-sm" onclick="triggerUpload()">Upload</button>
-    <input id="upload-input" type="file" multiple hidden data-after="view">
-    {% else %}
     <span class="meta">public clips &amp; screenshots</span>
-    {% endif %}
   </div>
 
   {% if not authenticated %}
+  <div class="dropzone" onclick="triggerUpload()" role="button" tabindex="0"
+       onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();triggerUpload();}">
+    <strong>Drop a clip or screenshot</strong>, or click to browse — you'll get a shareable link instantly
+  </div>
+  <input id="upload-input" type="file" multiple hidden>
   <div class="upload-progress-list" id="upload-progress-list"></div>
   {% endif %}
 
@@ -65,7 +65,7 @@
 
     {% for image in gallery_images %}
     <div class="card card-compact">
-      <div class="thumb openable" data-href="/i/{{ image.slug }}"><img src="/media/images/{{ image.filename }}" alt=""></div>
+      <div class="thumb lightboxable" data-full="/media/images/{{ image.filename }}" data-link="/i/{{ image.slug }}"><img src="/media/images/{{ image.filename }}" alt=""></div>
       <div class="card-body">
         {{ byline(image.owner_name) }}
         <div class="actions">

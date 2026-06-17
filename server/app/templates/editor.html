@@ -53,8 +53,15 @@
       <form action="/clip/{{ clip.id }}/trim" method="post" id="trim-form">
         <input type="hidden" name="start" id="start" value="0">
         <input type="hidden" name="end" id="end" value="0">
-        <button type="submit" class="btn btn-primary btn-block">Trim &amp; save</button>
+        <input type="hidden" name="save_as" id="save_as" value="save">
+        <div class="actions">
+          <button type="submit" class="btn btn-primary" onclick="document.getElementById('save_as').value='save'">Save</button>
+          <button type="submit" class="btn btn-outline" onclick="document.getElementById('save_as').value='copy'">Save as copy</button>
+        </div>
       </form>
+      <div class="kbd-hint" style="margin-top:8px;">
+        <strong>Save</strong> updates this clip. <strong>Save as copy</strong> keeps this one as-is and makes a new clip — handy for editing a published clip without changing what's already shared.
+      </div>
       <div class="kbd-hint" style="margin-top:8px;">
         <span class="kbd">Space</span> play/pause &nbsp; <span class="kbd">I</span>/<span class="kbd">O</span> set in/out &nbsp; <span class="kbd">←</span>/<span class="kbd">→</span> nudge 1f
       </div>

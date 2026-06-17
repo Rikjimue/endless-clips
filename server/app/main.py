@@ -577,6 +577,7 @@ def init_db():
     _add_col(conn, "clips", "user_id", "user_id INTEGER")
     _add_col(conn, "images", "visibility", "visibility TEXT DEFAULT 'unlisted'")
     _add_col(conn, "images", "user_id", "user_id INTEGER")
+    _add_col(conn, "images", "display_name", "display_name TEXT")
     _add_col(conn, "uploads", "visibility", "visibility TEXT DEFAULT 'unlisted'")
     _add_col(conn, "uploads", "hls_status", "hls_status TEXT DEFAULT 'none'")
     _add_col(conn, "uploads", "hls_dir", "hls_dir TEXT")
@@ -951,7 +952,8 @@ async def edit_page(request: Request, clip_id: int, user: dict = Depends(require
 
 @app.post("/clip/{clip_id}/trim")
 async def trim_clip(background: BackgroundTasks, clip_id: int, start: str = Form(...),
-                    end: str = Form(...), request: Request = None, user: dict = Depends(require_user)):
+                    end: str = Form(...), save_as: str = Form("save"),
+                    request: Request = None, user: dict = Depends(require_user)):
     conn = get_db()
     clip = _load_owned_clip(conn, clip_id, user)
 
@@ -974,8 +976,6 @@ async def trim_clip(background: BackgroundTasks, clip_id: int, start: str = Form
         conn.close()
         return _err("The source file is missing.")
 
-    prev_filename, prev_status, prev_thumb, prev_hls = \
-        clip["filename"], clip["status"], clip["thumbnail"], clip["hls_dir"]
     out_name = f"{uuid.uuid4().hex}.mp4"
     out_path = EDITED_DIR / out_name
     ok, err = await run_in_threadpool(run_trim, source_path, out_path, start_f, end_f - start_f)
@@ -985,6 +985,24 @@ async def trim_clip(background: BackgroundTasks, clip_id: int, start: str = Form
 
     duration = await run_in_threadpool(get_duration, out_path)
     thumbnail = await run_in_threadpool(generate_thumbnail, out_path)
+
+    # Save as copy: a new, independent clip (the original — even if published —
+    # is left exactly as it was). The copy is self-contained (its own source).
+    if save_as == "copy":
+        base_name = clip["display_name"] or clip["filename"]
+        new_slug = uuid.uuid4().hex[:8]
+        cur = conn.execute(
+            "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, "
+            "thumbnail, duration, user_id) VALUES (?, ?, ?, 'edited', 'private', ?, ?, ?, ?)",
+            (out_name, out_name, f"{base_name} (copy)", new_slug, thumbnail, duration, clip["user_id"]))
+        conn.commit()
+        new_id = cur.lastrowid
+        conn.close()
+        return RedirectResponse(url=f"/clip/{new_id}/edit", status_code=303)
+
+    # Save: replace this clip's current cut.
+    prev_filename, prev_status, prev_thumb, prev_hls = \
+        clip["filename"], clip["status"], clip["thumbnail"], clip["hls_dir"]
     conn.execute("UPDATE clips SET filename=?, status='edited', thumbnail=?, duration=?, "
                  "hls_status='none', hls_dir=NULL WHERE id=?",
                  (out_name, thumbnail, duration, clip_id))
@@ -1106,6 +1124,33 @@ async def share_image(request: Request, slug: str):
                                       {"image": img, "authenticated": is_authenticated(request)})
 
 
+@app.get("/image/{image_id}/edit")
+async def image_edit_page(request: Request, image_id: int, user: dict = Depends(require_user)):
+    conn = get_db()
+    img = conn.execute("SELECT * FROM images WHERE id = ?", (image_id,)).fetchone()
+    conn.close()
+    if not img:
+        raise HTTPException(404, "Screenshot not found")
+    if not owns_or_admin(user, img):
+        raise HTTPException(403, "Not your screenshot")
+    return templates.TemplateResponse(request, "image_editor.html",
+                                      {"image": img, "active": "library", "authenticated": True, "user": user})
+
+
+@app.post("/image/{image_id}/rename")
+async def rename_image(image_id: int, name: str = Form(...), user: dict = Depends(require_user)):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM images WHERE id = ?", (image_id,)).fetchone()
+    if not row or not owns_or_admin(user, row):
+        conn.close()
+        raise HTTPException(403, "Not your screenshot")
+    name = name.strip() or None
+    conn.execute("UPDATE images SET display_name = ? WHERE id = ?", (name, image_id))
+    conn.commit()
+    conn.close()
+    return JSONResponse({"ok": True, "name": name})
+
+
 @app.post("/image/{image_id}/visibility")
 async def set_image_visibility(request: Request, image_id: int, value: str = Form(...), user: dict = Depends(require_user)):
     if value not in VISIBILITIES:
@@ -1146,11 +1191,39 @@ async def add_upload(request: Request, background: BackgroundTasks, file: Upload
         raise HTTPException(401, "Sign in to upload")
     original_name = file.filename or "file"
     ext = Path(original_name).suffix.lower()
-    new_name = f"{uuid.uuid4().hex}{ext}"
-    await _save_upload(file, UPLOADS_DIR / new_name)
     kind = detect_kind(original_name)
-    slug = uuid.uuid4().hex[:8]
     owner_id = owner["id"] if owner else None
+    new_name = f"{uuid.uuid4().hex}{ext}"
+    slug = uuid.uuid4().hex[:8]
+
+    # Signed-in video upload -> a clip, then straight to the trim editor (Medal-style).
+    if kind == "video" and owner:
+        await _save_upload(file, RAW_DIR / new_name)
+        conn = get_db()
+        cur = conn.execute(
+            "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, duration, user_id) "
+            "VALUES (?, ?, ?, 'raw', 'private', ?, 0, ?)",
+            (new_name, new_name, original_name, slug, owner_id))
+        conn.commit()
+        clip_id = cur.lastrowid
+        conn.close()
+        background.add_task(build_clip_metadata, clip_id, new_name)
+        return {"ok": True, "kind": "clip", "edit": f"/clip/{clip_id}/edit"}
+
+    # Any image -> the images table; the client opens it in the in-page lightbox.
+    if kind == "image":
+        await _save_upload(file, IMAGES_DIR / new_name)
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO images (filename, display_name, slug, visibility, user_id) VALUES (?,?,?, 'unlisted', ?)",
+            (new_name, original_name, slug, owner_id))
+        conn.commit()
+        conn.close()
+        return {"ok": True, "kind": "image", "slug": slug,
+                "src": f"/media/images/{new_name}", "view": f"/i/{slug}"}
+
+    # Everything else (incl. anonymous video) -> uploads table + standalone view screen.
+    await _save_upload(file, UPLOADS_DIR / new_name)
     conn = get_db()
     cur = conn.execute(
         "INSERT INTO uploads (filename, original_name, display_name, kind, slug, visibility, user_id) "
@@ -1162,7 +1235,7 @@ async def add_upload(request: Request, background: BackgroundTasks, file: Upload
     background.add_task(build_upload_metadata, upload_id, new_name, kind)
     if kind == "video":
         background.add_task(build_upload_hls, upload_id)
-    return {"ok": True, "slug": slug}
+    return {"ok": True, "kind": kind, "slug": slug, "view": f"/u/{slug}"}
 
 
 def _load_owned_upload(conn, upload_id, user):
