@@ -563,6 +563,14 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT, ts REAL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER, kind TEXT, ref_id INTEGER,
+            slug TEXT, name TEXT, url TEXT, src TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
     # Migrations for pre-existing databases.
     _add_col(conn, "clips", "thumbnail", "thumbnail TEXT")
@@ -647,6 +655,18 @@ def record_login_fail(ip: str):
 def clear_login_fails(ip: str):
     conn = get_db()
     conn.execute("DELETE FROM login_attempts WHERE ip = ?", (ip,))
+    conn.commit()
+    conn.close()
+
+
+def add_notification(user_id, kind, ref_id, slug, name, url, src=None):
+    if not user_id:
+        return
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO notifications (user_id, kind, ref_id, slug, name, url, src) VALUES (?,?,?,?,?,?,?)",
+        (user_id, kind, ref_id, slug, name, url, src))
+    conn.execute("DELETE FROM notifications WHERE created_at < datetime('now','-1 day')")
     conn.commit()
     conn.close()
 
@@ -848,6 +868,8 @@ async def upload_video(request: Request, background: BackgroundTasks, file: Uplo
     clip_id = cur.lastrowid
     conn.close()
     background.add_task(build_clip_metadata, clip_id, new_name)
+    # Notify the owner's browser that a new clip is ready to edit.
+    add_notification(owner, "clip", clip_id, slug, file.filename or "Clip", f"/clip/{clip_id}/edit")
     return {"id": clip_id, "filename": new_name}
 
 
@@ -862,11 +884,16 @@ async def upload_image(request: Request, file: UploadFile = File(...)):
     new_name = f"{uuid.uuid4().hex}{ext}"
     await _save_upload(file, IMAGES_DIR / new_name)
     slug = uuid.uuid4().hex[:8]
+    owner = admin_user_id()
     conn = get_db()
-    conn.execute("INSERT INTO images (filename, slug, visibility, user_id) VALUES (?, ?, 'unlisted', ?)",
-                 (new_name, slug, admin_user_id()))
+    cur = conn.execute("INSERT INTO images (filename, display_name, slug, visibility, user_id) "
+                       "VALUES (?, ?, ?, 'unlisted', ?)",
+                       (new_name, file.filename, slug, owner))
     conn.commit()
+    image_id = cur.lastrowid
     conn.close()
+    add_notification(owner, "image", image_id, slug, file.filename or "Screenshot",
+                     f"/i/{slug}", src=f"/media/images/{new_name}")
     return {"url": f"/i/{slug}"}
 
 
@@ -1307,6 +1334,23 @@ async def share_upload(request: Request, slug: str):
     return templates.TemplateResponse(request, "share_upload.html",
                                       {"upload": row, "hls_url": hls_url,
                                        "authenticated": is_authenticated(request)})
+
+
+@app.get("/notifications/poll")
+async def notifications_poll(after: int | None = None, user: dict = Depends(require_user)):
+    conn = get_db()
+    if after is None:
+        # Baseline call: tell the client the current high-water mark, no items.
+        row = conn.execute("SELECT COALESCE(MAX(id),0) AS m FROM notifications WHERE user_id=?",
+                           (user["id"],)).fetchone()
+        conn.close()
+        return {"last": row["m"], "items": []}
+    rows = conn.execute(
+        "SELECT id, kind, ref_id, slug, name, url, src FROM notifications "
+        "WHERE user_id=? AND id>? ORDER BY id ASC LIMIT 20", (user["id"], after)).fetchall()
+    conn.close()
+    items = [dict(r) for r in rows]
+    return {"last": items[-1]["id"] if items else after, "items": items}
 
 
 @app.get("/healthz")

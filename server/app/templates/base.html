@@ -222,6 +222,15 @@ form { margin: 0; }
 .dropnote .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Push notifications (e.g. clips/screenshots arriving from the capture PC) */
+.notif-stack { position: fixed; top: 16px; right: 16px; display: flex; flex-direction: column; gap: 10px; z-index: 1600; width: 300px; max-width: calc(100vw - 32px); }
+.notif { background: var(--surface-2); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius-sm); padding: 12px 14px; box-shadow: 0 12px 30px -14px rgba(0,0,0,0.75); animation: notif-in .2s ease; }
+@keyframes notif-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.notif .nt { font-size: 13px; margin-bottom: 9px; line-height: 1.4; }
+.notif .nt .nname { color: var(--text-dim); }
+.notif .na { display: flex; gap: 8px; }
+.notif .na .btn { flex: 1; }
+
 @media (max-width: 600px) {
   .topbar-inner { padding: 14px 16px; flex-wrap: wrap; gap: 8px; }
   .shell { padding: 22px 16px 56px; }
@@ -241,6 +250,8 @@ form { margin: 0; }
 </div>
 
 <script>
+window.CLIPS_AUTH = {{ 'true' if authenticated else 'false' }};
+
 /* ---- Notifications ---- */
 function showToast(msg) {
   let t = document.getElementById('toast');
@@ -415,10 +426,53 @@ function setupUpload() {
 }
 function triggerUpload() { const i = document.getElementById('upload-input'); if (i) i.click(); }
 
+/* ---- Push notifications (capture-PC uploads) ---- */
+function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+function showNotif(item) {
+  let stack = document.getElementById('notif-stack');
+  if (!stack) { stack = document.createElement('div'); stack.id = 'notif-stack'; stack.className = 'notif-stack'; document.body.appendChild(stack); }
+  const el = document.createElement('div'); el.className = 'notif';
+  const label = item.kind === 'clip' ? 'New clip ready' : (item.kind === 'image' ? 'New screenshot' : 'New upload');
+  const nt = document.createElement('div'); nt.className = 'nt';
+  nt.innerHTML = '<strong>' + label + '</strong><br><span class="nname">' + escapeHtml(item.name) + '</span>';
+  const na = document.createElement('div'); na.className = 'na';
+  const act = document.createElement('button'); act.className = 'btn btn-primary btn-sm';
+  if (item.kind === 'image') {
+    act.textContent = 'View';
+    act.onclick = () => { openLightbox(item.src, { link: item.url }); el.remove(); };
+  } else {
+    act.textContent = item.kind === 'clip' ? 'Open editor' : 'Open';
+    act.onclick = () => { window.open(item.url, '_blank', 'noopener'); el.remove(); };
+  }
+  const dis = document.createElement('button'); dis.className = 'btn btn-outline btn-sm'; dis.textContent = 'Dismiss';
+  dis.onclick = () => el.remove();
+  na.appendChild(act); na.appendChild(dis);
+  el.appendChild(nt); el.appendChild(na); stack.appendChild(el);
+  setTimeout(() => { if (el.parentNode) el.remove(); }, 20000);
+}
+function startNotifications() {
+  if (!window.CLIPS_AUTH) return;
+  let lastId = null, stopped = false;
+  async function poll() {
+    if (stopped) return;
+    try {
+      const url = lastId === null ? '/notifications/poll' : '/notifications/poll?after=' + lastId;
+      const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      if (r.redirected || r.status === 401) { stopped = true; return; }  // session ended
+      const d = await r.json();
+      if (lastId !== null && d.items) d.items.forEach(showNotif);
+      lastId = d.last;
+    } catch (e) { /* transient: try again next tick */ }
+  }
+  poll();
+  setInterval(poll, 4000);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   enableOpenable();
   enableInlineRename();
   setupUpload();
+  startNotifications();
 });
 </script>
 </body>
