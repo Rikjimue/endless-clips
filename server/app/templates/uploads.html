@@ -1,32 +1,102 @@
 {% extends "base.html" %}
-{% block title %}Upload — Endless Clips{% endblock %}
+{% block title %}Endless Clips — capture, trim, share{% endblock %}
 {% block body %}
 {% include "_nav.html" %}
+
+{% macro byline(name) %}
+  <div class="byline">
+    {% if name %}
+      <span class="avatar">{{ name[0] | upper }}</span><span>by <span class="who">@{{ name }}</span></span>
+    {% else %}
+      <span class="avatar anon">?</span><span>anonymous</span>
+    {% endif %}
+  </div>
+{% endmacro %}
+
 <div class="shell">
   <div class="content-header">
-    <h1>Upload</h1>
-    <span class="meta">{{ uploads|length }} file{{ 's' if uploads|length != 1 else '' }}</span>
+    <h1>Capture</h1>
+    <span class="meta">drop a file to get a shareable link</span>
   </div>
 
-  <div class="dropzone" id="dropzone">
-    <strong>Drag and drop files here</strong>, or click to browse
+  <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Upload files">
+    <strong>Drop a clip or screenshot</strong>, or click to browse
     <input type="file" id="file-input" multiple hidden>
   </div>
   <div class="upload-progress-list" id="progress-list"></div>
 
-  {% if uploads %}
+  {% set has_gallery = gallery_clips or gallery_uploads or gallery_images %}
+  {% if has_gallery %}
+  <div class="section-title">Public feed</div>
   <div class="grid">
-    {% for u in uploads %}
+    {% for clip in gallery_clips %}
+    <div class="card">
+      <div class="thumb tile" data-src="/media/{{ 'edited' if clip.status == 'edited' else 'raw' }}/{{ clip.filename }}">
+        {% if clip.thumbnail %}<img src="/media/thumbnails/{{ clip.thumbnail }}" alt="">
+        {% else %}<div class="thumb-placeholder">CLIP</div>{% endif %}
+        <div class="play-hint" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="11" fill="rgba(8,8,12,0.55)" stroke="#fff" stroke-opacity="0.5"/><path d="M10 8.5l5 3.5-5 3.5z" fill="#fff"/></svg>
+        </div>
+        <span class="timecode duration-badge">{{ clip.duration | duration }}</span>
+      </div>
+      <div class="card-body">
+        <div class="card-title">{{ clip.display_name or 'Clip' }}</div>
+        <div class="card-actions">
+          <a href="/c/{{ clip.slug }}" class="btn btn-primary btn-sm" target="_blank" rel="noopener">Watch</a>
+          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/c/{{ clip.slug }}')">Copy link</button>
+        </div>
+        {{ byline(clip.owner_name) }}
+      </div>
+    </div>
+    {% endfor %}
+
+    {% for u in gallery_uploads %}
+    <div class="card {{ 'card-compact' if u.kind != 'video' }}">
+      <div class="thumb {{ 'tile' if u.kind == 'video' }}" {% if u.kind == 'video' %}data-src="/media/uploads/{{ u.filename }}"{% endif %}>
+        {% if u.kind == 'video' and u.thumbnail %}<img src="/media/thumbnails/{{ u.thumbnail }}" alt="">
+        {% elif u.kind == 'image' %}<img src="/media/uploads/{{ u.filename }}" alt="">
+        {% else %}<div class="thumb-placeholder">{{ (u.original_name.split('.')[-1] if '.' in u.original_name else 'FILE') | upper }}</div>{% endif %}
+        {% if u.kind == 'video' %}<div class="play-hint" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="11" fill="rgba(8,8,12,0.55)" stroke="#fff" stroke-opacity="0.5"/><path d="M10 8.5l5 3.5-5 3.5z" fill="#fff"/></svg>
+        </div>{% endif %}
+      </div>
+      <div class="card-body">
+        <div class="card-title">{{ u.display_name or u.original_name }}</div>
+        <div class="card-actions">
+          <a href="/u/{{ u.slug }}" class="btn btn-primary btn-sm" target="_blank" rel="noopener">Open</a>
+          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/u/{{ u.slug }}')">Copy link</button>
+        </div>
+        {{ byline(u.owner_name) }}
+      </div>
+    </div>
+    {% endfor %}
+
+    {% for image in gallery_images %}
+    <div class="card card-compact">
+      <div class="thumb"><img src="/media/images/{{ image.filename }}" alt=""></div>
+      <div class="card-body">
+        <div class="card-actions">
+          <a href="/i/{{ image.slug }}" class="btn btn-primary btn-sm" target="_blank" rel="noopener">Open</a>
+          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/i/{{ image.slug }}')">Copy link</button>
+        </div>
+        {{ byline(image.owner_name) }}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if authenticated %}
+  <div class="section-title">Your uploads</div>
+  {% if my_uploads %}
+  <div class="grid">
+    {% for u in my_uploads %}
     <div class="card {{ 'card-compact' if u.kind != 'video' }}" data-id="{{ u.id }}">
       <div class="thumb">
-        {% if u.kind == 'video' and u.thumbnail %}
-        <img src="/media/thumbnails/{{ u.thumbnail }}" alt="">
-        {% elif u.kind == 'image' %}
-        <img src="/media/uploads/{{ u.filename }}" alt="">
-        {% else %}
-        <div class="thumb-placeholder">{{ (u.original_name.split('.')[-1] if '.' in u.original_name else 'FILE') | upper }}</div>
-        {% endif %}
-        <span class="kind-pill">{{ u.kind }}</span>
+        {% if u.kind == 'video' and u.thumbnail %}<img src="/media/thumbnails/{{ u.thumbnail }}" alt="">
+        {% elif u.kind == 'image' %}<img src="/media/uploads/{{ u.filename }}" alt="">
+        {% else %}<div class="thumb-placeholder">{{ (u.original_name.split('.')[-1] if '.' in u.original_name else 'FILE') | upper }}</div>{% endif %}
+        <span class="vis-pill vis-{{ u.visibility }}">{{ u.visibility }}</span>
       </div>
       <div class="card-body">
         <div class="card-title" data-fallback="{{ u.original_name }}">{{ u.display_name or u.original_name }}</div>
@@ -34,19 +104,28 @@
         <div class="card-actions-grid">
           <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/u/{{ u.slug }}')">Copy link</button>
           <a href="/u/{{ u.slug }}" class="btn btn-primary btn-sm" target="_blank" rel="noopener">View</a>
-          {% if authenticated %}
           <button class="btn btn-outline btn-sm" onclick="openRename({{ u.id }}, this.closest('.card').querySelector('.card-title').textContent.trim(), 'upload', this.closest('.card'))">Rename</button>
           <form action="/uploads/{{ u.id }}/delete" method="post" onsubmit="return confirm('Delete this file?')">
             <button type="submit" class="btn btn-danger btn-sm">Delete</button>
           </form>
-          {% endif %}
+        </div>
+        <div class="vis-control">
+          {% for v in ['private','unlisted','public'] %}
+          <form action="/uploads/{{ u.id }}/visibility" method="post">
+            <input type="hidden" name="value" value="{{ v }}">
+            <button type="submit" class="btn btn-outline btn-sm" aria-pressed="{{ 'true' if u.visibility == v else 'false' }}">{{ v }}</button>
+          </form>
+          {% endfor %}
         </div>
       </div>
     </div>
     {% endfor %}
   </div>
   {% else %}
-  <div class="empty">No uploads yet. Drag a file above to get started.</div>
+  <div class="empty">Nothing uploaded yet. Drop a file above and it's instantly shareable.</div>
+  {% endif %}
+  {% elif not has_gallery %}
+  <div class="empty">No public clips yet. <a href="/login">Sign in</a> to build your library, or drop a file to get a link.</div>
   {% endif %}
 </div>
 
@@ -56,21 +135,25 @@ const fileInput = document.getElementById('file-input');
 const progressList = document.getElementById('progress-list');
 
 dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } });
 dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
 dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
-dropzone.addEventListener('drop', (e) => {
-  e.preventDefault();
-  dropzone.classList.remove('dragover');
-  handleFiles(e.dataTransfer.files);
-});
+dropzone.addEventListener('drop', (e) => { e.preventDefault(); dropzone.classList.remove('dragover'); handleFiles(e.dataTransfer.files); });
 fileInput.addEventListener('change', () => handleFiles(fileInput.files));
 
 function handleFiles(files) {
   let remaining = files.length;
+  let lastSlug = null;
   for (const file of files) {
-    uploadFile(file, () => {
+    uploadFile(file, (slug) => {
+      if (slug) lastSlug = slug;
       remaining -= 1;
-      if (remaining === 0) location.reload();
+      if (remaining === 0) {
+        if (files.length === 1 && lastSlug) {
+          copyToClipboard(location.origin + '/u/' + lastSlug);
+          setTimeout(() => location.reload(), 650);
+        } else { location.reload(); }
+      }
     });
   }
 }
@@ -78,25 +161,24 @@ function handleFiles(files) {
 function uploadFile(file, onDone) {
   const row = document.createElement('div');
   row.className = 'upload-progress-item';
-  row.innerHTML = `<span>${file.name}</span><span>0%</span>`;
+  row.innerHTML = `<span></span><span>0%</span>`;
+  row.firstChild.textContent = file.name;
   progressList.appendChild(row);
+  const status = row.querySelector('span:last-child');
 
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/uploads/add');
   xhr.upload.onprogress = (e) => {
-    if (e.lengthComputable) {
-      const pct = Math.round((e.loaded / e.total) * 100);
-      row.querySelector('span:last-child').textContent = pct + '%';
-    }
+    if (e.lengthComputable) status.textContent = Math.round((e.loaded / e.total) * 100) + '%';
   };
   xhr.onload = () => {
-    row.querySelector('span:last-child').textContent = xhr.status === 200 ? 'Done' : 'Failed';
-    onDone();
+    let slug = null;
+    try { slug = JSON.parse(xhr.responseText).slug; } catch (e) {}
+    if (xhr.status === 200) { status.textContent = 'Done'; status.className = 'done'; }
+    else { status.textContent = xhr.status === 413 ? 'Too large' : 'Failed'; status.className = 'failed'; }
+    onDone(slug);
   };
-  xhr.onerror = () => {
-    row.querySelector('span:last-child').textContent = 'Failed';
-    onDone();
-  };
+  xhr.onerror = () => { status.textContent = 'Failed'; status.className = 'failed'; onDone(null); };
   const formData = new FormData();
   formData.append('file', file);
   xhr.send(formData);

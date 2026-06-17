@@ -2,18 +2,15 @@
 {% block title %}Library — Endless Clips{% endblock %}
 {% block head_extra %}
 <style>
-  .lib-toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+  .lib-toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
   .lib-toolbar .input { flex: 1; max-width: 320px; }
   .card.is-hidden { display: none; }
-  .card-actions .btn-icon-danger { flex: 0 0 auto; }
+  .card-body .vis-control { margin-top: 8px; }
 </style>
 {% endblock %}
 {% block body %}
 {% include "_nav.html" %}
 <div class="shell">
-  {% set drafts = clips | rejectattr('published') | list %}
-  {% set published = clips | selectattr('published') | list %}
-
   <div class="content-header">
     <h1>Library</h1>
     <span class="meta">{{ clips|length }} clip{{ 's' if clips|length != 1 else '' }}</span>
@@ -23,15 +20,15 @@
     <input class="input" id="lib-search" placeholder="Search clips…" oninput="filterLibrary(this.value)">
   </div>
 
-  <div class="section-title">Drafts</div>
-  {% if drafts %}
-  <div class="grid" data-section="drafts">
-    {% for clip in drafts %}
+  <div class="section-title">Clips</div>
+  {% if clips %}
+  <div class="grid" data-section="clips">
+    {% for clip in clips %}
     <div class="card" data-name="{{ (clip.display_name or clip.filename) | lower }}">
       <div class="thumb">
         {% if clip.thumbnail %}<img src="/media/thumbnails/{{ clip.thumbnail }}" alt="">
-        {% else %}<div class="thumb-placeholder">NO PREVIEW</div>{% endif %}
-        <span class="status-pill status-{{ clip.status }}">{{ clip.status }}</span>
+        {% else %}<div class="thumb-placeholder">PROCESSING…</div>{% endif %}
+        <span class="vis-pill vis-{{ clip.visibility }}">{{ clip.visibility }}</span>
         <span class="timecode duration-badge">{{ clip.duration | duration }}</span>
       </div>
       <div class="card-body">
@@ -39,68 +36,59 @@
         <div class="card-meta">{{ clip.created_at }}</div>
         <div class="card-actions-grid">
           <a href="/clip/{{ clip.id }}/edit" class="btn btn-outline btn-sm">Edit</a>
-          <form action="/clip/{{ clip.id }}/publish" method="post">
-            <button type="submit" class="btn btn-primary btn-sm">Publish</button>
-          </form>
-          <form action="/clip/{{ clip.id }}/delete" method="post" style="grid-column: span 2;"
-                onsubmit="return confirm('Delete this clip and its files?')">
-            <button type="submit" class="btn btn-danger btn-sm">Delete</button>
-          </form>
-        </div>
-      </div>
-    </div>
-    {% endfor %}
-  </div>
-  {% else %}
-  <div class="empty">No drafts. New clips land here as soon as they're uploaded.</div>
-  {% endif %}
-
-  <div class="section-title">Published</div>
-  {% if published %}
-  <div class="grid" data-section="published">
-    {% for clip in published %}
-    <div class="card" data-name="{{ (clip.display_name or clip.filename) | lower }}">
-      <div class="thumb">
-        {% if clip.thumbnail %}<img src="/media/thumbnails/{{ clip.thumbnail }}" alt="">
-        {% else %}<div class="thumb-placeholder">NO PREVIEW</div>{% endif %}
-        <span class="status-pill status-{{ clip.status }}">{{ clip.status }}</span>
-        <span class="timecode duration-badge">{{ clip.duration | duration }}</span>
-      </div>
-      <div class="card-body">
-        <div class="card-title">{{ clip.display_name or clip.filename }}</div>
-        <div class="card-meta">{{ clip.created_at }}</div>
-        <div class="card-actions-grid">
-          <a href="/clip/{{ clip.id }}/edit" class="btn btn-outline btn-sm">Edit</a>
-          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/c/{{ clip.slug }}')">Copy</button>
+          {% if clip.visibility != 'private' and clip.slug %}
           <a href="/c/{{ clip.slug }}" class="btn btn-primary btn-sm" target="_blank" rel="noopener">View</a>
+          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/c/{{ clip.slug }}')">Copy</button>
+          {% else %}
+          <span></span><span></span>
+          {% endif %}
           <form action="/clip/{{ clip.id }}/delete" method="post"
                 onsubmit="return confirm('Delete this clip and its files?')">
             <button type="submit" class="btn btn-danger btn-sm">Delete</button>
           </form>
         </div>
+        <div class="vis-control">
+          {% for v in ['private','unlisted','public'] %}
+          <form action="/clip/{{ clip.id }}/visibility" method="post">
+            <input type="hidden" name="value" value="{{ v }}">
+            <button type="submit" class="btn btn-outline btn-sm" aria-pressed="{{ 'true' if clip.visibility == v else 'false' }}">{{ v }}</button>
+          </form>
+          {% endfor %}
+        </div>
       </div>
     </div>
     {% endfor %}
   </div>
   {% else %}
-  <div class="empty">Nothing published yet.</div>
+  <div class="empty">No clips yet. New recordings land here as soon as they're uploaded.</div>
   {% endif %}
 
   {% if images %}
   <div class="section-title">Screenshots</div>
   <div class="grid" data-section="screenshots">
     {% for image in images %}
-    <div class="card card-compact" data-name="">
-      <div class="thumb"><img src="/media/images/{{ image.filename }}" alt=""></div>
+    <div class="card card-compact">
+      <div class="thumb">
+        <img src="/media/images/{{ image.filename }}" alt="">
+        <span class="vis-pill vis-{{ image.visibility }}">{{ image.visibility }}</span>
+      </div>
       <div class="card-body">
         <div class="card-meta">{{ image.created_at }}</div>
         <div class="card-actions-grid">
-          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/i/{{ image.slug }}')">Copy</button>
           <a href="/i/{{ image.slug }}" class="btn btn-primary btn-sm" target="_blank" rel="noopener">View</a>
+          <button class="btn btn-outline btn-sm" onclick="copyToClipboard(location.origin + '/i/{{ image.slug }}')">Copy</button>
           <form action="/image/{{ image.id }}/delete" method="post" style="grid-column: span 2;"
                 onsubmit="return confirm('Delete this screenshot?')">
             <button type="submit" class="btn btn-danger btn-sm">Delete</button>
           </form>
+        </div>
+        <div class="vis-control">
+          {% for v in ['private','unlisted','public'] %}
+          <form action="/image/{{ image.id }}/visibility" method="post">
+            <input type="hidden" name="value" value="{{ v }}">
+            <button type="submit" class="btn btn-outline btn-sm" aria-pressed="{{ 'true' if image.visibility == v else 'false' }}">{{ v }}</button>
+          </form>
+          {% endfor %}
         </div>
       </div>
     </div>
@@ -112,11 +100,10 @@
 <script>
 function filterLibrary(q) {
   q = q.trim().toLowerCase();
-  document.querySelectorAll('.grid[data-section="drafts"] .card, .grid[data-section="published"] .card')
-    .forEach(card => {
-      const name = card.getAttribute('data-name') || '';
-      card.classList.toggle('is-hidden', q && !name.includes(q));
-    });
+  document.querySelectorAll('.grid[data-section="clips"] .card').forEach(card => {
+    const name = card.getAttribute('data-name') || '';
+    card.classList.toggle('is-hidden', q && !name.includes(q));
+  });
 }
 </script>
 {% endblock %}

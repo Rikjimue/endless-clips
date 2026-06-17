@@ -62,18 +62,25 @@
 
     <div>
       <div class="panel">
-        <h2>Share</h2>
-        {% if clip.published %}
+        <h2>Visibility</h2>
+        <span class="vis-label">Who can see this clip</span>
+        <div class="vis-control" style="margin-bottom:12px;">
+          {% for v, label in [('private','Private'),('unlisted','Unlisted'),('public','Public')] %}
+          <form action="/clip/{{ clip.id }}/visibility" method="post">
+            <input type="hidden" name="value" value="{{ v }}">
+            <button type="submit" class="btn btn-outline btn-sm" aria-pressed="{{ 'true' if clip.visibility == v else 'false' }}">{{ label }}</button>
+          </form>
+          {% endfor %}
+        </div>
+        <p class="kbd-hint" style="margin:0 0 12px;">
+          {% if clip.visibility == 'public' %}Listed on the home page and shareable by link.
+          {% elif clip.visibility == 'unlisted' %}Anyone with the link can view. Not listed publicly.
+          {% else %}Only you (signed in) can view, even with the link.{% endif %}
+        </p>
+        {% if clip.visibility != 'private' and clip.slug %}
         <div class="share-link-box" id="share-link">/c/{{ clip.slug }}</div>
         <button class="btn btn-outline btn-block" onclick="copyToClipboard(shareLinkFull)">Copy link</button>
         <a href="/c/{{ clip.slug }}" class="btn btn-primary btn-block" target="_blank" rel="noopener" style="margin-top:8px;">Open in new tab</a>
-        <form action="/clip/{{ clip.id }}/unpublish" method="post" style="margin-top:8px;">
-          <button type="submit" class="btn btn-outline btn-block">Unpublish</button>
-        </form>
-        {% else %}
-        <form action="/clip/{{ clip.id }}/publish" method="post">
-          <button type="submit" class="btn btn-primary btn-block">Publish</button>
-        </form>
         {% endif %}
       </div>
 

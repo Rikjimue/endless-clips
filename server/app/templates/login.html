@@ -3,20 +3,24 @@
 {% block body %}
 {% include "_nav.html" %}
 <div class="share-shell">
-  <div class="login-card">
-    <span class="brand">Endless Clips</span>
+  <div class="auth-card">
+    <span class="brand"><span class="rec-dot" aria-hidden="true"></span>Endless Clips</span>
+    <p class="auth-lede">Sign in to reach your library and manage clips.</p>
     <form method="post" action="/login">
       {% if error %}<div class="login-error">{{ error }}</div>{% endif %}
       <div class="field">
-        <label>Username</label>
-        <input class="input" style="width:100%" type="text" name="username" autofocus required>
+        <label for="u">Username</label>
+        <input id="u" class="input" style="width:100%" type="text" name="username" autocomplete="username" autofocus required>
       </div>
       <div class="field">
-        <label>Password</label>
-        <input class="input" style="width:100%" type="password" name="password" required>
+        <label for="p">Password</label>
+        <input id="p" class="input" style="width:100%" type="password" name="password" autocomplete="current-password" required>
       </div>
       <button type="submit" class="btn btn-primary btn-block">Sign in</button>
     </form>
+    {% if open_registration %}
+    <p class="auth-alt">New here? <a href="/register">Create an account</a></p>
+    {% endif %}
   </div>
 </div>
 {% endblock %}
