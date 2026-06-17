@@ -1242,17 +1242,20 @@ async def _ingest_web(background, request, original_name, owner, place):
 
     if kind == "video" and owner:
         await place(RAW_DIR / new_name)
+        # Faststart now (moov atom to the front) so the editor plays instantly,
+        # even behind a proxy that doesn't honor range requests. The wait shows on
+        # the upload progress bar as "Initializing…", not as an editor overlay.
+        await run_in_threadpool(optimize_faststart, RAW_DIR / new_name)
         conn = get_db()
         cur = conn.execute(
             "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, duration, ready, user_id) "
-            "VALUES (?, ?, ?, 'raw', 'private', ?, 0, 0, ?)",
+            "VALUES (?, ?, ?, 'raw', 'private', ?, 0, 1, ?)",
             (new_name, new_name, original_name, slug, owner_id))
         conn.commit()
         clip_id = cur.lastrowid
         conn.close()
-        background.add_task(build_clip_metadata, clip_id, new_name, True)
-        return {"ok": True, "kind": "clip", "id": clip_id,
-                "edit": f"/clip/{clip_id}/edit", "status": f"/clip/{clip_id}/status"}
+        background.add_task(build_clip_metadata, clip_id, new_name, False)  # duration + thumbnail only
+        return {"ok": True, "kind": "clip", "id": clip_id, "edit": f"/clip/{clip_id}/edit"}
 
     if kind == "image":
         await place(IMAGES_DIR / new_name)

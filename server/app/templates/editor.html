@@ -297,21 +297,5 @@ function startTitleEdit() {
     if (e.key === 'Escape') finish(current);
   });
 }
-
-{% if not clip.ready %}
-/* Clip still being prepared (faststart + metadata). Hold an initializing screen
-   and reload once it's ready so playback and the timeline are instant. */
-document.addEventListener('DOMContentLoaded', () => {
-  showLoading('Preparing your clip… this only happens once');
-  const tick = async () => {
-    try {
-      const r = await fetch('/clip/{{ clip.id }}/status', { headers: { 'Accept': 'application/json' } });
-      if (r.ok) { const d = await r.json(); if (d.ready) { location.reload(); return; } }
-    } catch (e) {}
-    setTimeout(tick, 1500);
-  };
-  tick();
-});
-{% endif %}
 </script>
 {% endblock %}
