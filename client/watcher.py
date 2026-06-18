@@ -1,3 +1,4 @@
+import hashlib
 import os
 import time
 import subprocess
@@ -26,10 +27,10 @@ FFMPEG_PATH = os.environ.get(
     r"C:\Users\rikji\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.1-full_build\bin\ffmpeg.exe",
 )
 
-SERVER = os.environ.get("CLIPS_SERVER", "http://clips.jaioleeming.com")
+SERVER = os.environ.get("CLIPS_SERVER", "https://clips.jaioleeming.com")
 VIDEO_UPLOAD_URL = f"{SERVER}/upload"
 IMAGE_UPLOAD_URL = f"{SERVER}/upload-image"
-UPLOAD_TOKEN = os.environ.get("CLIPS_UPLOAD_TOKEN", "")
+UPLOAD_TOKEN = os.environ.get("CLIPS_UPLOAD_TOKEN", "").strip()  # strip stray .env whitespace
 AUTH_HEADERS = {"X-Upload-Token": UPLOAD_TOKEN} if UPLOAD_TOKEN else {}
 
 REMUX_TO_MP4 = os.environ.get("CLIPS_REMUX", "1") == "1"
@@ -186,10 +187,20 @@ def upload_image(path: Path):
         return False
 
 
+def notify_start(name: str):
+    """Tell the server a file started uploading so reviewers get an instant popup."""
+    try:
+        session.post(f"{SERVER}/uploads/notify", data={"name": name, "event": "started"},
+                     headers=AUTH_HEADERS, timeout=15)
+    except Exception:
+        pass  # best-effort; never block the upload on the notification
+
+
 def process_video(path: Path):
     if not wait_until_stable(path):
         log(f"Gave up waiting for {path.name} to finish writing")
         return
+    notify_start(path.name)
 
     upload_path = path
     remuxed = None
@@ -217,6 +228,7 @@ def process_image(path: Path):
     if not wait_until_stable(path):
         log(f"Gave up waiting for {path.name} to finish writing")
         return
+    notify_start(path.name)
     if upload_image(path) and DELETE_AFTER_UPLOAD:
         safe_delete(path)
 
@@ -270,6 +282,11 @@ if __name__ == "__main__":
     observer.schedule(handler, VIDEO_FOLDER, recursive=False)
     observer.schedule(handler, SCREENSHOT_FOLDER, recursive=False)
     observer.start()
+    if UPLOAD_TOKEN:
+        fp = hashlib.sha256(UPLOAD_TOKEN.encode()).hexdigest()[:8]
+        log(f"Upload token fingerprint: {fp} (must match /healthz upload_token_fp on the server)")
+    else:
+        log("WARNING: no CLIPS_UPLOAD_TOKEN set — uploads will be treated as anonymous/rejected")
     log(f"Watching {VIDEO_FOLDER} and {SCREENSHOT_FOLDER} -> {SERVER}")
     try:
         while True:

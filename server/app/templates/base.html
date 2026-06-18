@@ -290,6 +290,17 @@ form { margin: 0; }
   </div>
 </div>
 
+<div class="modal-overlay" id="prompt-modal" onclick="if(event.target===this)closePrompt()">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
+    <h3 id="prompt-title">Name</h3>
+    <input class="input" id="prompt-input" style="width:100%" autocomplete="off" maxlength="60">
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline btn-sm" id="prompt-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary btn-sm" id="prompt-ok">Save</button>
+    </div>
+  </div>
+</div>
+
 <script>
 function showLoading(msg) { const el = document.getElementById('app-loading'); if (!el) return; document.getElementById('loading-msg').textContent = msg || 'Working…'; el.classList.add('show'); }
 function hideLoading() { const el = document.getElementById('app-loading'); if (el) el.classList.remove('show'); }
@@ -564,15 +575,52 @@ function initConfirmModal() {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeConfirm(); });
 }
 
+/* ---- Styled text-input prompt (replaces window.prompt for naming things) ---- */
+let _promptCb = null;
+function closePrompt() { document.getElementById('prompt-modal').classList.remove('show'); _promptCb = null; }
+function promptModal(title, okText, defaultValue, onOk) {
+  _promptCb = onOk;
+  document.getElementById('prompt-title').textContent = title;
+  document.getElementById('prompt-ok').textContent = okText || 'Save';
+  const inp = document.getElementById('prompt-input');
+  inp.value = defaultValue || '';
+  document.getElementById('prompt-modal').classList.add('show');
+  setTimeout(() => { inp.focus(); inp.select(); }, 30);
+}
+function initPromptModal() {
+  const ok = document.getElementById('prompt-ok');
+  const cancel = document.getElementById('prompt-cancel');
+  const inp = document.getElementById('prompt-input');
+  if (!ok) return;
+  const submit = () => { const cb = _promptCb, v = inp.value.trim(); closePrompt(); if (cb) cb(v); };
+  ok.addEventListener('click', submit);
+  cancel.addEventListener('click', closePrompt);
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    if (e.key === 'Escape') { e.preventDefault(); closePrompt(); }
+  });
+}
+
 /* ---- Push notifications (capture-PC uploads) ---- */
 function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 function showNotif(item) {
   let stack = document.getElementById('notif-stack');
   if (!stack) { stack = document.createElement('div'); stack.id = 'notif-stack'; stack.className = 'notif-stack'; document.body.appendChild(stack); }
   const el = document.createElement('div'); el.className = 'notif';
-  const label = item.kind === 'clip' ? 'New clip ready' : (item.kind === 'image' ? 'New screenshot' : 'New upload');
+  const labels = { clip: 'New clip ready', image: 'New screenshot', started: 'Upload started' };
+  const label = labels[item.kind] || 'New upload';
   const nt = document.createElement('div'); nt.className = 'nt';
   nt.innerHTML = '<strong>' + label + '</strong><br><span class="nname">' + escapeHtml(item.name) + '</span>';
+  el.appendChild(nt);
+
+  // "started" is informational (the file is still uploading) — no action yet.
+  if (item.kind === 'started') {
+    el.style.borderLeftColor = 'var(--text-dim)';
+    stack.appendChild(el);
+    setTimeout(() => { if (el.parentNode) el.remove(); }, 8000);
+    return;
+  }
+
   const na = document.createElement('div'); na.className = 'na';
   const act = document.createElement('button'); act.className = 'btn btn-primary btn-sm';
   if (item.kind === 'image') {
@@ -585,7 +633,7 @@ function showNotif(item) {
   const dis = document.createElement('button'); dis.className = 'btn btn-outline btn-sm'; dis.textContent = 'Dismiss';
   dis.onclick = () => el.remove();
   na.appendChild(act); na.appendChild(dis);
-  el.appendChild(nt); el.appendChild(na); stack.appendChild(el);
+  el.appendChild(na); stack.appendChild(el);
   setTimeout(() => { if (el.parentNode) el.remove(); }, 20000);
 }
 function startNotifications() {
@@ -612,6 +660,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupUpload();
   startNotifications();
   initConfirmModal();
+  initPromptModal();
   wireConfirms();
 });
 </script>

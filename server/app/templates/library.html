@@ -267,23 +267,33 @@ document.querySelectorAll('.sel').forEach(cb => {
 });
 function selectedItems() { return selectedBoxes().map(cb => cb.dataset.type + ':' + cb.dataset.id); }
 
-async function bulkMove() {
-  const sel = document.getElementById('bulk-folder');
-  let folder = sel.value;
-  const items = selectedItems();
-  if (!items.length) return;
-  if (folder === '') { showToast('Pick a destination'); return; }
-  if (folder === '__new') {
-    const name = prompt('New folder name'); if (!name || !name.trim()) { sel.value=''; return; }
-    try { const r = await fetch('/folders/create', { method:'POST', body: formFrom({ name: name.trim() }) });
-      const d = await r.json(); if (!r.ok) throw 0; folder = String(d.id); } catch(e) { showToast('Could not create folder'); return; }
-  }
+async function moveItemsTo(items, folder) {
   const fd = new FormData();
   items.forEach(i => fd.append('items', i));
   fd.append('folder', folder === '__unfiled' ? '' : folder);
   try { const r = await fetch('/library/move', { method:'POST', body: fd });
     if (r.ok) { showToast('Moved'); setTimeout(() => location.reload(), 350); } else showToast('Move failed'); }
   catch(e) { showToast('Move failed'); }
+}
+function bulkMove() {
+  const sel = document.getElementById('bulk-folder');
+  const folder = sel.value;
+  const items = selectedItems();
+  if (!items.length) return;
+  if (folder === '') { showToast('Pick a destination'); return; }
+  if (folder === '__new') {
+    sel.value = '';
+    promptModal('New folder', 'Create & move', '', async (name) => {
+      if (!name) return;
+      try {
+        const r = await fetch('/folders/create', { method:'POST', body: formFrom({ name }) });
+        const d = await r.json(); if (!r.ok) throw 0;
+        moveItemsTo(items, String(d.id));
+      } catch(e) { showToast('Could not create folder'); }
+    });
+    return;
+  }
+  moveItemsTo(items, folder);
 }
 function bulkDelete() {
   const items = selectedItems();
@@ -298,17 +308,23 @@ function bulkDelete() {
 
 /* ---- Folder management ---- */
 function formFrom(obj) { const fd = new FormData(); Object.entries(obj).forEach(([k,v]) => fd.append(k,v)); return fd; }
-async function newFolder() {
-  const name = prompt('New folder name'); if (!name || !name.trim()) return;
-  try { const r = await fetch('/folders/create', { method:'POST', body: formFrom({ name: name.trim() }) });
-    const d = await r.json(); if (r.ok) location.href = '/library?folder=' + d.id; else showToast('Could not create folder'); }
-  catch(e) { showToast('Could not create folder'); }
+function newFolder() {
+  promptModal('New folder', 'Create', '', async (name) => {
+    if (!name) return;
+    try { const r = await fetch('/folders/create', { method:'POST', body: formFrom({ name }) });
+      const d = await r.json(); if (r.ok) location.href = '/library?folder=' + d.id; else showToast('Could not create folder'); }
+    catch(e) { showToast('Could not create folder'); }
+  });
 }
-async function renameFolder(id) {
-  const name = prompt('Rename folder'); if (!name || !name.trim()) return;
-  try { const r = await fetch('/folders/' + id + '/rename', { method:'POST', body: formFrom({ name: name.trim() }) });
-    if (r.ok) location.reload(); else showToast('Rename failed'); }
-  catch(e) { showToast('Rename failed'); }
+function renameFolder(id) {
+  const chip = document.querySelector('.folder-chip.active');
+  const current = chip ? chip.firstChild.textContent.trim() : '';
+  promptModal('Rename folder', 'Save', current, async (name) => {
+    if (!name) return;
+    try { const r = await fetch('/folders/' + id + '/rename', { method:'POST', body: formFrom({ name }) });
+      if (r.ok) location.reload(); else showToast('Rename failed'); }
+    catch(e) { showToast('Rename failed'); }
+  });
 }
 function deleteFolder(id) {
   confirmAction('Delete this folder? Its items move back to Unfiled (nothing is deleted).', 'Delete folder', async () => {
