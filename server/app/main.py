@@ -750,8 +750,17 @@ async def _save_upload(file: UploadFile, dest: Path, max_bytes: int = MAX_UPLOAD
         raise
 
 
+def _sent_token(request: Request) -> str:
+    # Strip so stray whitespace (e.g. a space after '=' in a .env) never causes a mismatch.
+    return request.headers.get("x-upload-token", "").strip()
+
+
+def token_matches(request: Request) -> bool:
+    return bool(UPLOAD_TOKEN) and secrets.compare_digest(_sent_token(request), UPLOAD_TOKEN)
+
+
 def require_upload_token(request: Request):
-    if UPLOAD_TOKEN and not secrets.compare_digest(request.headers.get("x-upload-token", ""), UPLOAD_TOKEN):
+    if UPLOAD_TOKEN and not token_matches(request):
         raise HTTPException(401, "Invalid upload token")
 
 
@@ -906,6 +915,15 @@ async def logout(request: Request):
 
 
 # ---------- Capture-PC (watcher) endpoints ----------
+
+@app.post("/uploads/notify")
+async def upload_notify(request: Request, name: str = Form(""), event: str = Form("started")):
+    """The capture-PC calls this when a file starts uploading, so a reviewer sees a
+    push notification right away (the completion notification fires after ingest)."""
+    require_upload_token(request)
+    add_notification(admin_user_id(), "started", 0, None, name or "Upload", None)
+    return {"ok": True}
+
 
 @app.post("/upload")
 async def upload_video(request: Request, background: BackgroundTasks, file: UploadFile = File(...)):
@@ -1585,10 +1603,9 @@ def _chunk_auth(request: Request) -> bool:
     """True if this caller may upload as the trusted capture-PC (valid token),
     False for an ordinary web session. A wrong/expired token is rejected rather
     than silently downgraded to an anonymous upload."""
-    sent = request.headers.get("x-upload-token", "")
-    if UPLOAD_TOKEN and secrets.compare_digest(sent, UPLOAD_TOKEN):
+    if token_matches(request):
         return True
-    if sent:
+    if _sent_token(request):
         raise HTTPException(401, "Invalid upload token")
     if REQUIRE_LOGIN_UPLOAD and not is_authenticated(request):
         raise HTTPException(401, "Sign in to upload")
@@ -1649,8 +1666,7 @@ async def upload_chunk(request: Request):
 async def upload_finish(request: Request, background: BackgroundTasks,
                         upload_id: str = Form(...), filename: str = Form(...),
                         target: str = Form("web"), size: int = Form(0)):
-    token_ok = bool(UPLOAD_TOKEN) and secrets.compare_digest(
-        request.headers.get("x-upload-token", ""), UPLOAD_TOKEN)
+    token_ok = token_matches(request)
     part = _part_path(upload_id)
     if not part.exists():
         raise HTTPException(400, "No upload data for that id")
@@ -1804,8 +1820,15 @@ async def notifications_poll(after: int = None, user: dict = Depends(require_use
     return {"last": items[-1]["id"] if items else after, "items": items}
 
 
+def _token_fp() -> str:
+    """Short, non-reversible fingerprint of the upload token. Compare with the
+    watcher's startup fingerprint to confirm both sides share the same secret."""
+    return hashlib.sha256(UPLOAD_TOKEN.encode()).hexdigest()[:8] if UPLOAD_TOKEN else ""
+
+
 @app.get("/healthz")
 async def healthz():
     return {"ok": True, "encoder": ENCODER_NAME, "hls_encoder": HLS_ENCODER,
             "hls_segment_seconds": HLS_SEGMENT_SECONDS, "transcode_concurrency": TRANSCODE_CONCURRENCY,
-            "open_registration": OPEN_REGISTRATION}
+            "open_registration": OPEN_REGISTRATION,
+            "upload_token_set": bool(UPLOAD_TOKEN), "upload_token_fp": _token_fp()}

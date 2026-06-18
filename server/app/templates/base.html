@@ -607,9 +607,20 @@ function showNotif(item) {
   let stack = document.getElementById('notif-stack');
   if (!stack) { stack = document.createElement('div'); stack.id = 'notif-stack'; stack.className = 'notif-stack'; document.body.appendChild(stack); }
   const el = document.createElement('div'); el.className = 'notif';
-  const label = item.kind === 'clip' ? 'New clip ready' : (item.kind === 'image' ? 'New screenshot' : 'New upload');
+  const labels = { clip: 'New clip ready', image: 'New screenshot', started: 'Upload started' };
+  const label = labels[item.kind] || 'New upload';
   const nt = document.createElement('div'); nt.className = 'nt';
   nt.innerHTML = '<strong>' + label + '</strong><br><span class="nname">' + escapeHtml(item.name) + '</span>';
+  el.appendChild(nt);
+
+  // "started" is informational (the file is still uploading) — no action yet.
+  if (item.kind === 'started') {
+    el.style.borderLeftColor = 'var(--text-dim)';
+    stack.appendChild(el);
+    setTimeout(() => { if (el.parentNode) el.remove(); }, 8000);
+    return;
+  }
+
   const na = document.createElement('div'); na.className = 'na';
   const act = document.createElement('button'); act.className = 'btn btn-primary btn-sm';
   if (item.kind === 'image') {
@@ -622,7 +633,7 @@ function showNotif(item) {
   const dis = document.createElement('button'); dis.className = 'btn btn-outline btn-sm'; dis.textContent = 'Dismiss';
   dis.onclick = () => el.remove();
   na.appendChild(act); na.appendChild(dis);
-  el.appendChild(nt); el.appendChild(na); stack.appendChild(el);
+  el.appendChild(na); stack.appendChild(el);
   setTimeout(() => { if (el.parentNode) el.remove(); }, 20000);
 }
 function startNotifications() {
