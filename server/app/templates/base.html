@@ -636,6 +636,29 @@ function showNotif(item) {
   el.appendChild(na); stack.appendChild(el);
   setTimeout(() => { if (el.parentNode) el.remove(); }, 20000);
 }
+/* Auto-refresh the Library/Home grid when new content lands, so a capture-PC
+   upload appears without a manual reload. Guarded so it never interrupts the
+   user mid-edit, mid-upload, or mid-selection. */
+function onListingPage() {
+  return !!document.querySelector('.grid') && (location.pathname === '/' || location.pathname === '/library');
+}
+function busyInteracting() {
+  if (document.querySelector('.modal-overlay.show, .lightbox.show')) return true;
+  const ae = document.activeElement;
+  if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return true;
+  if (document.querySelector('.sel:checked')) return true;                       // active multi-select
+  if (document.querySelector('#upload-progress-list .up-pct:not(.done):not(.failed)')) return true;  // upload running
+  return false;
+}
+let _refreshQueued = false;
+function queueContentRefresh() {
+  if (_refreshQueued) return;
+  _refreshQueued = true;
+  (function attempt() {
+    if (busyInteracting()) { setTimeout(attempt, 3000); return; }  // wait until idle
+    location.reload();
+  })();
+}
 function startNotifications() {
   if (!window.CLIPS_AUTH) return;
   let lastId = null, stopped = false;
@@ -646,7 +669,13 @@ function startNotifications() {
       const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
       if (r.redirected || r.status === 401) { stopped = true; return; }  // session ended
       const d = await r.json();
-      if (lastId !== null && d.items) d.items.forEach(showNotif);
+      if (lastId !== null && d.items && d.items.length) {
+        d.items.forEach(showNotif);
+        // "started" is informational; a ready clip/screenshot/upload means new content exists.
+        if (onListingPage() && d.items.some(i => i.kind !== 'started')) {
+          setTimeout(queueContentRefresh, 1500);  // let the popup register first
+        }
+      }
       lastId = d.last;
     } catch (e) { /* transient: try again next tick */ }
   }
