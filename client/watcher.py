@@ -26,10 +26,10 @@ FFMPEG_PATH = os.environ.get(
     r"C:\Users\rikji\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.1-full_build\bin\ffmpeg.exe",
 )
 
-SERVER = os.environ.get("CLIPS_SERVER", "http://clips.jaioleeming.com")
+SERVER = os.environ.get("CLIPS_SERVER", "https://clips.jaioleeming.com")
 VIDEO_UPLOAD_URL = f"{SERVER}/upload"
 IMAGE_UPLOAD_URL = f"{SERVER}/upload-image"
-UPLOAD_TOKEN = os.environ.get("CLIPS_UPLOAD_TOKEN", "")
+UPLOAD_TOKEN = os.environ.get("CLIPS_UPLOAD_TOKEN", "").strip()  # strip stray .env whitespace
 AUTH_HEADERS = {"X-Upload-Token": UPLOAD_TOKEN} if UPLOAD_TOKEN else {}
 
 REMUX_TO_MP4 = os.environ.get("CLIPS_REMUX", "1") == "1"

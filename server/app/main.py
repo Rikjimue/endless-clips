@@ -48,7 +48,7 @@ COOKIE_SECURE = os.environ.get("CLIPS_COOKIE_SECURE", "0") in ("1", "true", "Tru
 TRUST_PROXY = os.environ.get("CLIPS_TRUST_PROXY", "0") in ("1", "true", "True")
 OPEN_REGISTRATION = os.environ.get("CLIPS_OPEN_REGISTRATION", "1") in ("1", "true", "True")
 REQUIRE_LOGIN_UPLOAD = os.environ.get("CLIPS_REQUIRE_LOGIN_TO_UPLOAD", "0") in ("1", "true", "True")
-UPLOAD_TOKEN = os.environ.get("CLIPS_UPLOAD_TOKEN", "")  # shared secret for the capture-PC watcher
+UPLOAD_TOKEN = os.environ.get("CLIPS_UPLOAD_TOKEN", "").strip()  # shared secret for the capture-PC watcher
 MAX_UPLOAD_BYTES = int(os.environ.get("CLIPS_MAX_UPLOAD_MB", "4096")) * 1024 * 1024
 GLOBAL_RATE_PER_MIN = int(os.environ.get("CLIPS_GLOBAL_RATE_PER_MIN", "600"))
 
@@ -1582,9 +1582,14 @@ def _pwrite_at(fd: int, data: bytes, pos: int):
 
 
 def _chunk_auth(request: Request) -> bool:
-    """True if this caller may upload. Capture-PC token or web session."""
-    if UPLOAD_TOKEN and secrets.compare_digest(request.headers.get("x-upload-token", ""), UPLOAD_TOKEN):
+    """True if this caller may upload as the trusted capture-PC (valid token),
+    False for an ordinary web session. A wrong/expired token is rejected rather
+    than silently downgraded to an anonymous upload."""
+    sent = request.headers.get("x-upload-token", "")
+    if UPLOAD_TOKEN and secrets.compare_digest(sent, UPLOAD_TOKEN):
         return True
+    if sent:
+        raise HTTPException(401, "Invalid upload token")
     if REQUIRE_LOGIN_UPLOAD and not is_authenticated(request):
         raise HTTPException(401, "Sign in to upload")
     return False
