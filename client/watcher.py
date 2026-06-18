@@ -116,48 +116,55 @@ def remux_to_mp4(path: Path) -> Path:
     return out_path
 
 
-def upload_video(path: Path) -> bool:
+def _upload_chunked(path: Path, target: str):
     """Chunked upload so no single request exceeds the proxy body cap (Cloudflare 100MB).
 
     Chunks upload in parallel and the server writes each at its byte offset, so the
-    transfer is faster and no server-side stitching pass is needed.
+    transfer is faster and no server-side stitching pass is needed. Both clips and
+    screenshots use this one transport (target='clip' or 'image'), so they behave
+    identically. Returns the /uploads/finish response.
     """
     chunk_url = f"{SERVER}/uploads/chunk"
     finish_url = f"{SERVER}/uploads/finish"
     upload_id = uuid.uuid4().hex
     chunk_bytes = 90 * 1024 * 1024
     workers = int(os.environ.get("CLIPS_UPLOAD_WORKERS", "3"))
-    try:
-        size = path.stat().st_size
-        offsets = list(range(0, max(size, 1), chunk_bytes))
-        sent = 0
-        sent_lock = threading.Lock()
+    size = path.stat().st_size
+    offsets = list(range(0, max(size, 1), chunk_bytes))
+    sent = 0
+    sent_lock = threading.Lock()
 
-        def send_chunk(offset):
-            nonlocal sent
-            with open(path, "rb") as f:
-                f.seek(offset)
-                data = f.read(chunk_bytes)
-            headers = dict(AUTH_HEADERS)
-            headers["X-Upload-Id"] = upload_id
-            headers["X-Chunk-Offset"] = str(offset)
-            headers["Content-Type"] = "application/octet-stream"
-            resp = session.post(chunk_url, data=data, headers=headers, timeout=600)
-            resp.raise_for_status()
-            with sent_lock:
-                sent += len(data)
-                log(f"  {path.name}: {sent}/{size} bytes")
-
-        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-            futures = [pool.submit(send_chunk, off) for off in offsets]
-            for fut in as_completed(futures):
-                fut.result()  # re-raise the first failure
-
-        resp = session.post(
-            finish_url,
-            data={"upload_id": upload_id, "filename": path.name, "target": "clip", "size": size},
-            headers=AUTH_HEADERS, timeout=120)
+    def send_chunk(offset):
+        nonlocal sent
+        with open(path, "rb") as f:
+            f.seek(offset)
+            data = f.read(chunk_bytes)
+        headers = dict(AUTH_HEADERS)
+        headers["X-Upload-Id"] = upload_id
+        headers["X-Chunk-Offset"] = str(offset)
+        headers["Content-Type"] = "application/octet-stream"
+        resp = session.post(chunk_url, data=data, headers=headers, timeout=600)
         resp.raise_for_status()
+        with sent_lock:
+            sent += len(data)
+            log(f"  {path.name}: {sent}/{size} bytes")
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = [pool.submit(send_chunk, off) for off in offsets]
+        for fut in as_completed(futures):
+            fut.result()  # re-raise the first failure
+
+    resp = session.post(
+        finish_url,
+        data={"upload_id": upload_id, "filename": path.name, "target": target, "size": size},
+        headers=AUTH_HEADERS, timeout=120)
+    resp.raise_for_status()
+    return resp
+
+
+def upload_video(path: Path) -> bool:
+    try:
+        resp = _upload_chunked(path, "clip")
         log(f"Uploaded video {path.name} ({resp.status_code})")
         return True
     except Exception as e:
@@ -165,13 +172,9 @@ def upload_video(path: Path) -> bool:
         return False
 
 
-def upload_image(path: Path):
+def upload_image(path: Path) -> bool:
     try:
-        with open(path, "rb") as f:
-            mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
-            files = {"file": (path.name, f, mime)}
-            resp = session.post(IMAGE_UPLOAD_URL, files=files, headers=AUTH_HEADERS, timeout=120)
-        resp.raise_for_status()
+        resp = _upload_chunked(path, "image")
         link = resp.json().get("url")
         if link:
             full = link if link.startswith("http") else f"{SERVER}{link}"

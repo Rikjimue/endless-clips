@@ -1630,7 +1630,8 @@ async def upload_chunk(request: Request):
             raise HTTPException(400, "Bad chunk offset")
         if offset < 0 or offset > MAX_UPLOAD_BYTES:
             raise HTTPException(413, "Upload exceeds maximum size")
-        fd = os.open(dest, os.O_WRONLY | os.O_CREAT, 0o644)
+        # O_BINARY (no-op on POSIX) keeps Windows from newline-translating the bytes.
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
         written = 0
         try:
             async for chunk in request.stream():
@@ -1694,6 +1695,28 @@ async def upload_finish(request: Request, background: BackgroundTasks,
         background.add_task(build_clip_metadata, clip_id, new_name, False)
         add_notification(owner, "clip", clip_id, slug, filename or "Clip", f"/clip/{clip_id}/edit")
         return {"id": clip_id, "filename": new_name}
+
+    # Capture-PC screenshot -> an image owned by admin (same result as /upload-image,
+    # but over the same chunked transport the clips use).
+    if token_ok and target == "image":
+        ext = Path(filename).suffix.lower() or ".png"
+        if ext not in IMAGE_EXTS:
+            part.unlink(missing_ok=True)
+            raise HTTPException(400, "Unsupported image type")
+        new_name = f"{uuid.uuid4().hex}{ext}"
+        await run_in_threadpool(shutil.move, str(part), str(IMAGES_DIR / new_name))
+        owner = admin_user_id()
+        slug = uuid.uuid4().hex[:8]
+        conn = get_db()
+        cur = conn.execute(
+            "INSERT INTO images (filename, display_name, slug, visibility, user_id) VALUES (?,?,?, 'unlisted', ?)",
+            (new_name, filename, slug, owner))
+        conn.commit()
+        image_id = cur.lastrowid
+        conn.close()
+        add_notification(owner, "image", image_id, slug, filename or "Screenshot",
+                         f"/i/{slug}", src=f"/media/images/{new_name}")
+        return {"url": f"/i/{slug}", "slug": slug}
 
     # Web context (cookie session), mirrors /uploads/add routing.
     owner = current_user(request)
