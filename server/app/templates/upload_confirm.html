@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Confirm upload — Endless Clips{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+<div class="shell">
+  <div class="content-header">
+    <h1>Confirm upload</h1>
+    <span class="meta">{{ upload.original_name }}</span>
+  </div>
+
+  <div class="editor-layout">
+    <div class="main-col">
+      <div class="player-wrap" style="display:flex; align-items:center; justify-content:center; min-height:240px;">
+        {% if upload.kind == 'image' %}
+        <img src="/media/uploads/{{ upload.filename }}" alt="" style="max-width:100%; max-height:72vh; object-fit:contain; display:block;">
+        {% elif upload.kind == 'video' %}
+        <video src="/media/uploads/{{ upload.filename }}" controls playsinline style="max-width:100%; max-height:72vh; display:block;"></video>
+        {% else %}
+        <div class="thumb-placeholder" style="font-size:15px;">{{ (upload.original_name.split('.')[-1] if '.' in upload.original_name else 'FILE') | upper }}</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <h2>Confirm upload</h2>
+        <p class="kbd-hint" style="margin:0 0 14px;">Confirm to get a shareable link, or discard to delete this file.</p>
+        <form action="/uploads/{{ upload.id }}/confirm" method="post">
+          <span class="vis-label">Visibility</span>
+          <div class="vis-select" style="margin-bottom:14px;">
+            <select name="value" aria-label="Visibility">
+              <option value="unlisted" selected>Unlisted — anyone with the link</option>
+              <option value="public">Public — shown on Home</option>
+              <option value="private">Private — only you</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-primary btn-block">Confirm &amp; get link</button>
+        </form>
+        <form action="/uploads/{{ upload.id }}/delete" method="post" style="margin-top:8px;"
+              data-confirm="Discard this file? It will be permanently deleted." data-confirm-ok="Discard">
+          <button type="submit" class="btn btn-danger btn-block">Discard</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -4,8 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{% block title %}Endless Clips{% endblock %}</title>
-<link rel="icon" type="image/png" href="/static/favicon.png">
+<link rel="icon" href="/static/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16.png">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+<link rel="icon" type="image/png" sizes="64x64" href="/static/favicon.png">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -54,7 +56,7 @@ a { color: inherit; text-decoration: none; }
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
 }
 .brand { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 15px; display: inline-flex; align-items: center; }
-.brand-logo { height: 26px; width: auto; display: block; }
+.brand-logo { height: 40px; width: auto; display: block; }
 .brand-logo-lg { height: 42px; width: auto; display: block; margin: 0 auto 18px; }
 .topnav { display: flex; align-items: center; gap: 6px; }
 .nav-link { padding: 7px 14px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; color: var(--text-dim); transition: color .15s, background .15s; }
@@ -431,31 +433,47 @@ function uploadFile(file, list, onDone) {
   xhr.onerror = () => fail(0);
   const fd = new FormData(); fd.append('file', file); xhr.send(fd);
 }
+var CHUNK_CONCURRENCY = 3;  // chunks in flight at once — each lands at its own offset server-side
 async function uploadChunked(file, bar, pct, done, fail) {
   const id = uuidish();
   const total = Math.ceil(file.size / CHUNK_BYTES);
-  let sent = 0;
-  for (let i = 0; i < total; i++) {
-    const blob = file.slice(i * CHUNK_BYTES, Math.min(file.size, (i + 1) * CHUNK_BYTES));
-    const base = sent;
-    try {
-      await new Promise((res, rej) => {
-        const x = new XMLHttpRequest();
-        x.open('POST', '/uploads/chunk');
-        x.setRequestHeader('X-Upload-Id', id);
-        x.setRequestHeader('X-Chunk-Index', String(i));
-        x.upload.onprogress = (e) => { if (e.lengthComputable) { const p = Math.round((base + e.loaded) / file.size * 100); bar.style.width = p + '%'; pct.textContent = p + '%'; } };
-        x.onload = () => x.status === 200 ? res() : rej(x.status);
-        x.onerror = () => rej(0);
-        x.send(blob);
-      });
-    } catch (st) { fail(st); return; }
-    sent += blob.size;
+  const loaded = new Array(total).fill(0);
+  const refresh = () => {
+    const sum = loaded.reduce((a, b) => a + b, 0);
+    const p = Math.round(sum / file.size * 100);
+    bar.style.width = p + '%'; pct.textContent = p + '%';
+  };
+  const sendChunk = (i) => new Promise((res, rej) => {
+    const offset = i * CHUNK_BYTES;
+    const blob = file.slice(offset, Math.min(file.size, offset + CHUNK_BYTES));
+    const x = new XMLHttpRequest();
+    x.open('POST', '/uploads/chunk');
+    x.setRequestHeader('X-Upload-Id', id);
+    x.setRequestHeader('X-Chunk-Index', String(i));
+    x.setRequestHeader('X-Chunk-Offset', String(offset));
+    x.upload.onprogress = (e) => { if (e.lengthComputable) { loaded[i] = e.loaded; refresh(); } };
+    x.onload = () => { if (x.status === 200) { loaded[i] = blob.size; refresh(); res(); } else rej(x.status); };
+    x.onerror = () => rej(0);
+    x.send(blob);
+  });
+
+  // Worker pool: a shared index cursor feeds CHUNK_CONCURRENCY uploaders.
+  let next = 0, failed = null;
+  async function worker() {
+    while (failed === null) {
+      const i = next++;
+      if (i >= total) return;
+      try { await sendChunk(i); } catch (st) { if (failed === null) failed = st; return; }
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(CHUNK_CONCURRENCY, total) }, worker));
+  if (failed !== null) { fail(failed); return; }
+
   bar.style.width = '100%'; pct.textContent = 'Initializing…';
   try {
     const fd = new FormData();
-    fd.append('upload_id', id); fd.append('filename', file.name); fd.append('target', 'web');
+    fd.append('upload_id', id); fd.append('filename', file.name);
+    fd.append('target', 'web'); fd.append('size', String(file.size));
     const r = await fetch('/uploads/finish', { method: 'POST', body: fd });
     let data = null; try { data = await r.json(); } catch (e) {}
     if (r.ok) done(data, 200); else fail(r.status);
@@ -498,10 +516,9 @@ function setupUpload() {
         showDropnote(anyFail ? 'Some uploads failed' : 'Upload complete', false);
         setTimeout(hideDropnote, 2000);
         if (anyFail) return;
-        if (files.length === 1 && lastData) {
-          if (lastData.kind === 'clip') { window.location.href = lastData.edit; }
-          else if (lastData.kind === 'image') { openLightbox(lastData.src, { link: lastData.view, reloadOnClose: true }); }
-          else { window.location.href = lastData.view; }
+        if (files.length === 1 && lastData && lastData.edit) {
+          // Every upload now lands on its confirm/edit screen before going public.
+          window.location.href = lastData.edit;
         } else {
           setTimeout(() => location.reload(), 500);
         }
@@ -513,7 +530,15 @@ function triggerUpload() { const i = document.getElementById('upload-input'); if
 
 /* ---- Styled confirm (replaces window.confirm on delete/discard forms) ---- */
 let _confirmForm = null;
-function closeConfirm() { document.getElementById('confirm-modal').classList.remove('show'); _confirmForm = null; }
+let _confirmCb = null;
+function closeConfirm() { document.getElementById('confirm-modal').classList.remove('show'); _confirmForm = null; _confirmCb = null; }
+/* Imperative styled confirm for JS-driven actions (e.g. bulk delete). */
+function confirmAction(text, okText, onOk) {
+  _confirmForm = null; _confirmCb = onOk;
+  document.getElementById('confirm-text').textContent = text;
+  document.getElementById('confirm-ok').textContent = okText || 'Delete';
+  document.getElementById('confirm-modal').classList.add('show');
+}
 function wireConfirms() {
   document.querySelectorAll('form[data-confirm]').forEach((f) => {
     if (f._confirmWired) return; f._confirmWired = true;
@@ -531,7 +556,8 @@ function initConfirmModal() {
   const ok = document.getElementById('confirm-ok');
   const cancel = document.getElementById('confirm-cancel');
   if (ok) ok.addEventListener('click', () => {
-    const f = _confirmForm; closeConfirm();
+    const f = _confirmForm, cb = _confirmCb; closeConfirm();
+    if (cb) { cb(); return; }
     if (f) { f._confirmed = true; if (f.requestSubmit) f.requestSubmit(); else f.submit(); }
   });
   if (cancel) cancel.addEventListener('click', closeConfirm);

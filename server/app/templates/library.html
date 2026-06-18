@@ -5,6 +5,28 @@
   .lib-toolbar { display: flex; gap: 12px; align-items: center; margin: 0 0 18px; }
   .lib-toolbar .input { flex: 1; max-width: 340px; }
   .card.is-hidden { display: none; }
+
+  /* Folder bar */
+  .folder-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 0 0 20px; }
+  .folder-chip { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; color: var(--text-dim); background: var(--surface); transition: all .15s ease; }
+  .folder-chip:hover { border-color: var(--accent); color: var(--text); }
+  .folder-chip.active { background: var(--surface-2); color: var(--text); border-color: var(--accent); }
+  .fc-count { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--text-dim); background: var(--surface-2); border-radius: 999px; padding: 1px 7px; }
+  .folder-chip.active .fc-count { background: var(--bg); }
+
+  /* Selection */
+  .card { position: relative; }
+  .card-select { position: absolute; top: 8px; right: 8px; z-index: 6; width: 22px; height: 22px; cursor: pointer; opacity: 0; transition: opacity .12s; }
+  .card:hover .card-select, .card.selected .card-select { opacity: 1; }
+  .card-select input { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; margin: 0; }
+  .card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+  /* Bulk action bar */
+  .bulk-bar { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(140%); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px 10px 16px; display: flex; align-items: center; gap: 12px; z-index: 1800; box-shadow: 0 16px 40px -16px rgba(0,0,0,0.8); transition: transform .2s ease; max-width: calc(100vw - 32px); flex-wrap: wrap; }
+  .bulk-bar.show { transform: translateX(-50%) translateY(0); }
+  .bulk-bar .bb-count { font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .bulk-bar select { font-family: 'Inter', sans-serif; font-size: 12.5px; background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius-sm); padding: 7px 10px; cursor: pointer; }
+  .pending-note { font-size: 12.5px; color: var(--text-dim); margin: -6px 0 14px; }
 </style>
 {% endblock %}
 {% block body %}
@@ -20,6 +42,10 @@
 </form>
 {% endmacro %}
 
+{% macro selbox(kind, id) %}
+<label class="card-select" title="Select"><input type="checkbox" class="sel" data-type="{{ kind }}" data-id="{{ id }}"></label>
+{% endmacro %}
+
 <div class="shell">
   <div class="content-header">
     <h1>Library</h1>
@@ -31,15 +57,94 @@
   </div>
   <div class="upload-progress-list" id="upload-progress-list"></div>
 
+  <div class="folder-bar">
+    <a class="folder-chip {{ 'active' if current_folder is none }}" href="/library">All</a>
+    <a class="folder-chip {{ 'active' if current_folder == 'unfiled' }}" href="/library?folder=unfiled">Unfiled</a>
+    {% for f in folders %}
+    <a class="folder-chip {{ 'active' if current_folder == f.id }}" href="/library?folder={{ f.id }}">{{ f.name }} <span class="fc-count">{{ f.count }}</span></a>
+    {% endfor %}
+    <button class="btn btn-outline btn-sm" onclick="newFolder()">+ New folder</button>
+    {% if current_folder and current_folder != 'unfiled' %}
+    <button class="btn btn-outline btn-sm" onclick="renameFolder({{ current_folder }})">Rename</button>
+    <button class="btn btn-danger btn-sm" onclick="deleteFolder({{ current_folder }})">Delete folder</button>
+    {% endif %}
+  </div>
+
   <div class="lib-toolbar">
     <input class="input" id="lib-search" placeholder="Search clips" oninput="filterLibrary(this.value)" aria-label="Search clips">
   </div>
+
+  {% set pending_any = pending_clips or pending_images or pending_uploads %}
+  {% if pending_any %}
+  <div class="section-title">Unconfirmed</div>
+  <p class="pending-note">These uploads aren't shared yet. Open each one to confirm (and set visibility) or discard it.</p>
+  <div class="grid">
+    {% for clip in pending_clips %}
+    <div class="card" data-name="{{ (clip.display_name or clip.filename) | lower }}">
+      <div class="thumb openable" data-href="/clip/{{ clip.id }}/edit">
+        {% if clip.thumbnail %}<img src="/media/thumbnails/{{ clip.thumbnail }}" alt="">{% else %}<div class="thumb-placeholder">PROCESSING</div>{% endif %}
+        <span class="vis-pill vis-private">unconfirmed</span>
+        <span class="timecode duration-badge">{{ clip.duration | duration }}</span>
+      </div>
+      <div class="card-body">
+        <div class="card-title">{{ clip.display_name or clip.filename }}</div>
+        <div class="card-meta">{{ clip.created_at }}</div>
+        <div class="actions">
+          <a href="/clip/{{ clip.id }}/edit" class="btn btn-primary btn-sm">Confirm / edit</a>
+          <form action="/clip/{{ clip.id }}/delete" method="post" data-confirm="Discard this upload? It will be deleted.">
+            <button type="submit" class="btn btn-danger btn-sm">Discard</button>
+          </form>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+    {% for image in pending_images %}
+    <div class="card card-compact">
+      <div class="thumb lightboxable" data-full="/media/images/{{ image.filename }}">
+        <img src="/media/images/{{ image.filename }}" alt="">
+        <span class="vis-pill vis-private">unconfirmed</span>
+      </div>
+      <div class="card-body">
+        <div class="card-title">{{ image.display_name or 'Screenshot' }}</div>
+        <div class="card-meta">{{ image.created_at }}</div>
+        <div class="actions">
+          <a href="/image/{{ image.id }}/edit" class="btn btn-primary btn-sm">Confirm / edit</a>
+          <form action="/image/{{ image.id }}/delete" method="post" data-confirm="Discard this screenshot? It will be deleted.">
+            <button type="submit" class="btn btn-danger btn-sm">Discard</button>
+          </form>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+    {% for u in pending_uploads %}
+    <div class="card {{ 'card-compact' if u.kind != 'video' }}">
+      <div class="thumb openable" data-href="/uploads/{{ u.id }}/edit">
+        {% if u.kind == 'video' and u.thumbnail %}<img src="/media/thumbnails/{{ u.thumbnail }}" alt="">
+        {% elif u.kind == 'image' %}<img src="/media/uploads/{{ u.filename }}" alt="">
+        {% else %}<div class="thumb-placeholder">{{ (u.original_name.split('.')[-1] if '.' in u.original_name else 'FILE') | upper }}</div>{% endif %}
+        <span class="vis-pill vis-private">unconfirmed</span>
+      </div>
+      <div class="card-body">
+        <div class="card-title">{{ u.display_name or u.original_name }}</div>
+        <div class="card-meta">{{ u.created_at }}</div>
+        <div class="actions">
+          <a href="/uploads/{{ u.id }}/edit" class="btn btn-primary btn-sm">Confirm</a>
+          <form action="/uploads/{{ u.id }}/delete" method="post" data-confirm="Discard this file? It will be deleted.">
+            <button type="submit" class="btn btn-danger btn-sm">Discard</button>
+          </form>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
 
   <div class="section-title">Clips</div>
   {% if clips %}
   <div class="grid" data-section="clips">
     {% for clip in clips %}
-    <div class="card" data-name="{{ (clip.display_name or clip.filename) | lower }}">
+    <div class="card" data-type="clip" data-id="{{ clip.id }}" data-name="{{ (clip.display_name or clip.filename) | lower }}">
+      {{ selbox('clip', clip.id) }}
       <div class="thumb openable" data-href="/c/{{ clip.slug }}">
         {% if clip.thumbnail %}<img src="/media/thumbnails/{{ clip.thumbnail }}" alt="">{% else %}<div class="thumb-placeholder">PROCESSING</div>{% endif %}
         <div class="play-btn"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="rgba(8,9,11,0.55)" stroke="#fff" stroke-opacity="0.55"/><path d="M10 8.3l5.2 3.7-5.2 3.7z" fill="#fff"/></svg></div>
@@ -62,14 +167,15 @@
     {% endfor %}
   </div>
   {% else %}
-  <div class="empty">No clips yet. Recordings from your capture PC land here automatically.</div>
+  <div class="empty">No clips here. Recordings from your capture PC land here automatically.</div>
   {% endif %}
 
   {% if images %}
   <div class="section-title">Screenshots</div>
   <div class="grid">
     {% for image in images %}
-    <div class="card card-compact">
+    <div class="card card-compact" data-type="image" data-id="{{ image.id }}">
+      {{ selbox('image', image.id) }}
       <div class="thumb lightboxable" data-full="/media/images/{{ image.filename }}" data-link="/i/{{ image.slug }}">
         <img src="/media/images/{{ image.filename }}" alt="">
         <span class="vis-pill vis-{{ image.visibility }}">{{ image.visibility }}</span>
@@ -95,7 +201,8 @@
   <div class="section-title">Uploads</div>
   <div class="grid">
     {% for u in uploads %}
-    <div class="card {{ 'card-compact' if u.kind != 'video' }}">
+    <div class="card {{ 'card-compact' if u.kind != 'video' }}" data-type="upload" data-id="{{ u.id }}">
+      {{ selbox('upload', u.id) }}
       <div class="thumb openable" data-href="/u/{{ u.slug }}">
         {% if u.kind == 'video' and u.thumbnail %}<img src="/media/thumbnails/{{ u.thumbnail }}" alt="">
         {% elif u.kind == 'image' %}<img src="/media/uploads/{{ u.filename }}" alt="">
@@ -120,6 +227,19 @@
   {% endif %}
 </div>
 
+<div class="bulk-bar" id="bulk-bar">
+  <span class="bb-count" id="bulk-count">0 selected</span>
+  <select id="bulk-folder" aria-label="Move to folder">
+    <option value="">Move to…</option>
+    <option value="__unfiled">Unfiled</option>
+    {% for f in folders %}<option value="{{ f.id }}">{{ f.name }}</option>{% endfor %}
+    <option value="__new">+ New folder…</option>
+  </select>
+  <button class="btn btn-outline btn-sm" onclick="bulkMove()">Move</button>
+  <button class="btn btn-danger btn-sm" onclick="bulkDelete()">Delete</button>
+  <button class="btn btn-outline btn-sm" onclick="clearSelection()">Clear</button>
+</div>
+
 <script>
 function filterLibrary(q) {
   q = q.trim().toLowerCase();
@@ -128,6 +248,76 @@ function filterLibrary(q) {
     card.classList.toggle('is-hidden', q && !name.includes(q));
   });
 }
+
+/* ---- Multi-select ---- */
+function selectedBoxes() { return [...document.querySelectorAll('.sel:checked')]; }
+function refreshBulk() {
+  const n = selectedBoxes().length;
+  const bar = document.getElementById('bulk-bar');
+  document.getElementById('bulk-count').textContent = n + ' selected';
+  bar.classList.toggle('show', n > 0);
+}
+function clearSelection() {
+  document.querySelectorAll('.sel:checked').forEach(cb => { cb.checked = false; cb.closest('.card').classList.remove('selected'); });
+  refreshBulk();
+}
+document.querySelectorAll('.sel').forEach(cb => {
+  cb.addEventListener('click', (e) => e.stopPropagation());
+  cb.addEventListener('change', () => { cb.closest('.card').classList.toggle('selected', cb.checked); refreshBulk(); });
+});
+function selectedItems() { return selectedBoxes().map(cb => cb.dataset.type + ':' + cb.dataset.id); }
+
+async function bulkMove() {
+  const sel = document.getElementById('bulk-folder');
+  let folder = sel.value;
+  const items = selectedItems();
+  if (!items.length) return;
+  if (folder === '') { showToast('Pick a destination'); return; }
+  if (folder === '__new') {
+    const name = prompt('New folder name'); if (!name || !name.trim()) { sel.value=''; return; }
+    try { const r = await fetch('/folders/create', { method:'POST', body: formFrom({ name: name.trim() }) });
+      const d = await r.json(); if (!r.ok) throw 0; folder = String(d.id); } catch(e) { showToast('Could not create folder'); return; }
+  }
+  const fd = new FormData();
+  items.forEach(i => fd.append('items', i));
+  fd.append('folder', folder === '__unfiled' ? '' : folder);
+  try { const r = await fetch('/library/move', { method:'POST', body: fd });
+    if (r.ok) { showToast('Moved'); setTimeout(() => location.reload(), 350); } else showToast('Move failed'); }
+  catch(e) { showToast('Move failed'); }
+}
+function bulkDelete() {
+  const items = selectedItems();
+  if (!items.length) return;
+  confirmAction(`Delete ${items.length} selected item${items.length>1?'s':''} and their files? This cannot be undone.`, 'Delete', async () => {
+    const fd = new FormData(); items.forEach(i => fd.append('items', i));
+    try { const r = await fetch('/library/bulk-delete', { method:'POST', body: fd });
+      if (r.ok) { showToast('Deleted'); setTimeout(() => location.reload(), 350); } else showToast('Delete failed'); }
+    catch(e) { showToast('Delete failed'); }
+  });
+}
+
+/* ---- Folder management ---- */
+function formFrom(obj) { const fd = new FormData(); Object.entries(obj).forEach(([k,v]) => fd.append(k,v)); return fd; }
+async function newFolder() {
+  const name = prompt('New folder name'); if (!name || !name.trim()) return;
+  try { const r = await fetch('/folders/create', { method:'POST', body: formFrom({ name: name.trim() }) });
+    const d = await r.json(); if (r.ok) location.href = '/library?folder=' + d.id; else showToast('Could not create folder'); }
+  catch(e) { showToast('Could not create folder'); }
+}
+async function renameFolder(id) {
+  const name = prompt('Rename folder'); if (!name || !name.trim()) return;
+  try { const r = await fetch('/folders/' + id + '/rename', { method:'POST', body: formFrom({ name: name.trim() }) });
+    if (r.ok) location.reload(); else showToast('Rename failed'); }
+  catch(e) { showToast('Rename failed'); }
+}
+function deleteFolder(id) {
+  confirmAction('Delete this folder? Its items move back to Unfiled (nothing is deleted).', 'Delete folder', async () => {
+    try { const r = await fetch('/folders/' + id + '/delete', { method:'POST', headers:{ 'Accept':'application/json' } });
+      if (r.ok) location.href = '/library'; else showToast('Delete failed'); }
+    catch(e) { showToast('Delete failed'); }
+  });
+}
+refreshBulk();
 </script>
 <div class="drop-overlay" id="drop-overlay">Drop to upload</div>
 {% endblock %}

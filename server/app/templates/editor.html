@@ -68,6 +68,27 @@
     </div>
 
     <div>
+      {% if clip.pending %}
+      <div class="panel">
+        <h2>Confirm upload</h2>
+        <p class="kbd-hint" style="margin:0 0 14px;">Trim your clip on the left if you'd like, then confirm to get a shareable link. Discarding deletes it.</p>
+        <form action="/clip/{{ clip.id }}/confirm" method="post">
+          <span class="vis-label">Visibility</span>
+          <div class="vis-select" style="margin-bottom:14px;">
+            <select name="value" aria-label="Visibility">
+              <option value="unlisted" selected>Unlisted — anyone with the link</option>
+              <option value="public">Public — shown on Home</option>
+              <option value="private">Private — only you</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-primary btn-block">Confirm &amp; get link</button>
+        </form>
+        <form action="/clip/{{ clip.id }}/delete" method="post" style="margin-top:8px;"
+              data-confirm="Discard this upload? It will be permanently deleted." data-confirm-ok="Discard">
+          <button type="submit" class="btn btn-danger btn-block">Discard</button>
+        </form>
+      </div>
+      {% else %}
       <div class="panel">
         <h2>Visibility</h2>
         <span class="vis-label">Who can see this clip</span>
@@ -102,6 +123,7 @@
           <button type="submit" class="btn btn-danger btn-block">Delete clip</button>
         </form>
       </div>
+      {% endif %}
     </div>
   </div>
 </div>
