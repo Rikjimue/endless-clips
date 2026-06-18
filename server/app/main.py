@@ -1718,6 +1718,12 @@ async def upload_finish(request: Request, background: BackgroundTasks,
                          f"/i/{slug}", src=f"/media/images/{new_name}")
         return {"url": f"/i/{slug}", "slug": slug}
 
+    # A capture-PC target with a missing/wrong token must fail loudly — otherwise the
+    # upload silently becomes an anonymous, unconfirmed web item with no notification.
+    if target in ("clip", "image"):
+        part.unlink(missing_ok=True)
+        raise HTTPException(401, "Invalid upload token")
+
     # Web context (cookie session), mirrors /uploads/add routing.
     owner = current_user(request)
     if REQUIRE_LOGIN_UPLOAD and not owner:
