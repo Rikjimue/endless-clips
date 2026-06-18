@@ -82,7 +82,7 @@ CSP = (
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.plyr.io; "
     "font-src 'self' https://fonts.gstatic.com; "
     "script-src 'self' 'unsafe-inline' https://cdn.plyr.io https://cdn.jsdelivr.net; "
-    "worker-src 'self' blob:; child-src blob:; connect-src 'self' blob:; "
+    "worker-src 'self' blob:; child-src blob:; connect-src 'self' blob: https://cdn.plyr.io; "
     "frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
 )
 
@@ -211,6 +211,37 @@ def owns_or_admin(user, row) -> bool:
     except Exception:
         owner = None
     return bool(user and owner is not None and user["id"] == owner)
+
+
+# A "draft" is a freshly-uploaded, not-yet-confirmed item. Anonymous uploaders
+# (no account) get capability to edit/confirm/discard their own drafts via the
+# session, since the item is gated 'private' and the slug is unguessable.
+
+def _draft_key(kind: str, item_id) -> str:
+    return f"{kind}:{item_id}"
+
+
+def add_draft(request: Request, kind: str, item_id):
+    drafts = request.session.get("drafts", [])
+    key = _draft_key(kind, item_id)
+    if key not in drafts:
+        drafts.append(key)
+        request.session["drafts"] = drafts[-50:]  # cap session growth
+
+
+def is_own_draft(request: Request, kind: str, item_id) -> bool:
+    return _draft_key(kind, item_id) in request.session.get("drafts", [])
+
+
+def clear_draft(request: Request, kind: str, item_id):
+    key = _draft_key(kind, item_id)
+    drafts = [d for d in request.session.get("drafts", []) if d != key]
+    request.session["drafts"] = drafts
+
+
+def can_manage(request: Request, row, kind: str) -> bool:
+    """Owner/admin, or the anonymous uploader holding the session draft."""
+    return owns_or_admin(current_user(request), row) or is_own_draft(request, kind, row["id"])
 
 
 # ---------- ffmpeg helpers ----------
@@ -575,6 +606,13 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER, name TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
     # Migrations for pre-existing databases.
     _add_col(conn, "clips", "thumbnail", "thumbnail TEXT")
@@ -596,6 +634,11 @@ def init_db():
     _add_col(conn, "uploads", "hls_status", "hls_status TEXT DEFAULT 'none'")
     _add_col(conn, "uploads", "hls_dir", "hls_dir TEXT")
     _add_col(conn, "uploads", "user_id", "user_id INTEGER")
+
+    # Confirm-before-publish gate (Task 4) + Library folders (Task 5).
+    for t in ("clips", "images", "uploads"):
+        _add_col(conn, t, "pending", "pending INTEGER DEFAULT 0")
+        _add_col(conn, t, "folder_id", "folder_id INTEGER")
 
     # Seed the admin account (first run) and adopt any orphaned content.
     has_user = conn.execute("SELECT 1 FROM users LIMIT 1").fetchone()
@@ -920,15 +963,16 @@ async def home(request: Request):
     conn = get_db()
     gallery_clips = conn.execute(
         "SELECT c.*, u.username AS owner_name FROM clips c LEFT JOIN users u ON u.id = c.user_id "
-        "WHERE c.visibility = 'public' AND c.slug IS NOT NULL ORDER BY c.created_at DESC"
+        "WHERE c.visibility = 'public' AND c.slug IS NOT NULL AND COALESCE(c.pending,0)=0 "
+        "ORDER BY c.created_at DESC"
     ).fetchall()
     gallery_uploads = conn.execute(
         "SELECT p.*, u.username AS owner_name FROM uploads p LEFT JOIN users u ON u.id = p.user_id "
-        "WHERE p.visibility = 'public' ORDER BY p.created_at DESC"
+        "WHERE p.visibility = 'public' AND COALESCE(p.pending,0)=0 ORDER BY p.created_at DESC"
     ).fetchall()
     gallery_images = conn.execute(
         "SELECT i.*, u.username AS owner_name FROM images i LEFT JOIN users u ON u.id = i.user_id "
-        "WHERE i.visibility = 'public' ORDER BY i.created_at DESC"
+        "WHERE i.visibility = 'public' AND COALESCE(i.pending,0)=0 ORDER BY i.created_at DESC"
     ).fetchall()
     conn.close()
     return templates.TemplateResponse(
@@ -938,27 +982,198 @@ async def home(request: Request):
          "authenticated": authed, "user": user})
 
 
+# ---------- File purge helpers (shared by single + bulk delete) ----------
+
+def _purge_clip_files(row):
+    for name in {row["filename"], row["source_filename"]}:
+        if not name:
+            continue
+        for base in (RAW_DIR, EDITED_DIR):
+            p = base / name
+            if p.exists():
+                p.unlink()
+    if row["thumbnail"]:
+        tp = THUMBNAIL_DIR / row["thumbnail"]
+        if tp.exists():
+            tp.unlink()
+    cleanup_hls_dir(row["hls_dir"])
+
+
+def _purge_image_files(row):
+    p = IMAGES_DIR / row["filename"]
+    if p.exists():
+        p.unlink()
+
+
+def _purge_upload_files(row):
+    p = UPLOADS_DIR / row["filename"]
+    if p.exists():
+        p.unlink()
+    if row["thumbnail"]:
+        tp = THUMBNAIL_DIR / row["thumbnail"]
+        if tp.exists():
+            tp.unlink()
+    cleanup_hls_dir(row["hls_dir"])
+
+
 # ---------- Library ----------
 
 @app.get("/library")
-async def library(request: Request, user: dict = Depends(require_user)):
+async def library(request: Request, user: dict = Depends(require_user),
+                  folder: str = None):
     conn = get_db()
-    if user["is_admin"]:
-        clips = conn.execute("SELECT * FROM clips ORDER BY created_at DESC").fetchall()
-        images = conn.execute("SELECT * FROM images ORDER BY created_at DESC LIMIT 120").fetchall()
-        uploads = conn.execute("SELECT * FROM uploads ORDER BY created_at DESC").fetchall()
+    folders = conn.execute(
+        "SELECT f.id, f.name, "
+        "(SELECT COUNT(*) FROM clips   WHERE folder_id = f.id) + "
+        "(SELECT COUNT(*) FROM images  WHERE folder_id = f.id) + "
+        "(SELECT COUNT(*) FROM uploads WHERE folder_id = f.id) AS count "
+        "FROM folders f WHERE f.user_id = ? ORDER BY f.name COLLATE NOCASE",
+        (user["id"],)).fetchall()
+
+    # Folder filter: a numeric id scopes to that folder; "unfiled" shows items with
+    # no folder; absent/"all" shows everything the user owns.
+    current_folder = None
+    if folder and folder.isdigit():
+        current_folder = int(folder)
+        scope, params = "folder_id = ?", [current_folder]
+    elif folder == "unfiled":
+        current_folder = "unfiled"
+        scope, params = "folder_id IS NULL", []
     else:
-        clips = conn.execute("SELECT * FROM clips WHERE user_id = ? ORDER BY created_at DESC",
-                             (user["id"],)).fetchall()
-        images = conn.execute("SELECT * FROM images WHERE user_id = ? ORDER BY created_at DESC LIMIT 120",
-                             (user["id"],)).fetchall()
-        uploads = conn.execute("SELECT * FROM uploads WHERE user_id = ? ORDER BY created_at DESC",
-                              (user["id"],)).fetchall()
+        scope, params = "1=1", []
+
+    owner = "" if user["is_admin"] else "user_id = ? AND "
+    owner_params = [] if user["is_admin"] else [user["id"]]
+
+    def q(table, limit=""):
+        return conn.execute(
+            f"SELECT * FROM {table} WHERE {owner}{scope} AND COALESCE(pending,0)=0 "
+            f"ORDER BY created_at DESC {limit}", (*owner_params, *params)).fetchall()
+
+    clips = q("clips")
+    images = q("images", "LIMIT 120")
+    uploads = q("uploads")
+    # Unconfirmed (pending) items the user still needs to confirm or discard.
+    pending_clips = conn.execute(
+        f"SELECT * FROM clips WHERE {owner}COALESCE(pending,0)=1 ORDER BY created_at DESC",
+        owner_params).fetchall()
+    pending_images = conn.execute(
+        f"SELECT * FROM images WHERE {owner}COALESCE(pending,0)=1 ORDER BY created_at DESC",
+        owner_params).fetchall()
+    pending_uploads = conn.execute(
+        f"SELECT * FROM uploads WHERE {owner}COALESCE(pending,0)=1 ORDER BY created_at DESC",
+        owner_params).fetchall()
     conn.close()
     return templates.TemplateResponse(
         request, "library.html",
         {"clips": clips, "images": images, "uploads": uploads,
+         "folders": folders, "current_folder": current_folder,
+         "pending_clips": pending_clips, "pending_images": pending_images,
+         "pending_uploads": pending_uploads,
          "active": "library", "authenticated": True, "user": user})
+
+
+# ---------- Folders & bulk actions ----------
+
+_ITEM_RE = re.compile(r"^(clip|image|upload):(\d+)$")
+_TABLE_FOR = {"clip": "clips", "image": "images", "upload": "uploads"}
+_PURGE_FOR = {"clip": _purge_clip_files, "image": _purge_image_files,
+              "upload": _purge_upload_files}
+
+
+def _own_folder(conn, folder_id, user):
+    row = conn.execute("SELECT * FROM folders WHERE id = ?", (folder_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Folder not found")
+    if not (user["is_admin"] or row["user_id"] == user["id"]):
+        raise HTTPException(403, "Not your folder")
+    return row
+
+
+@app.post("/folders/create")
+async def create_folder(name: str = Form(...), user: dict = Depends(require_user)):
+    name = name.strip()[:60]
+    if not name:
+        raise HTTPException(400, "Folder name required")
+    conn = get_db()
+    cur = conn.execute("INSERT INTO folders (user_id, name) VALUES (?, ?)", (user["id"], name))
+    conn.commit()
+    fid = cur.lastrowid
+    conn.close()
+    return JSONResponse({"ok": True, "id": fid, "name": name})
+
+
+@app.post("/folders/{folder_id}/rename")
+async def rename_folder(folder_id: int, name: str = Form(...), user: dict = Depends(require_user)):
+    name = name.strip()[:60]
+    if not name:
+        raise HTTPException(400, "Folder name required")
+    conn = get_db()
+    _own_folder(conn, folder_id, user)
+    conn.execute("UPDATE folders SET name = ? WHERE id = ?", (name, folder_id))
+    conn.commit()
+    conn.close()
+    return JSONResponse({"ok": True, "id": folder_id, "name": name})
+
+
+@app.post("/folders/{folder_id}/delete")
+async def delete_folder(request: Request, folder_id: int, user: dict = Depends(require_user)):
+    conn = get_db()
+    _own_folder(conn, folder_id, user)
+    # Return the folder's items to "unfiled" rather than deleting them.
+    for table in _TABLE_FOR.values():
+        conn.execute(f"UPDATE {table} SET folder_id = NULL WHERE folder_id = ?", (folder_id,))
+    conn.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+    conn.commit()
+    conn.close()
+    if request.headers.get("accept", "").startswith("application/json"):
+        return JSONResponse({"ok": True})
+    return RedirectResponse(url="/library", status_code=303)
+
+
+def _parse_items(items):
+    """Yield (kind, id) for each valid 'kind:id' token."""
+    for tok in items:
+        m = _ITEM_RE.match((tok or "").strip())
+        if m:
+            yield m.group(1), int(m.group(2))
+
+
+@app.post("/library/move")
+async def library_move(items: list[str] = Form(default=[]), folder: str = Form(""),
+                       user: dict = Depends(require_user)):
+    conn = get_db()
+    target = None
+    if folder and folder.isdigit():
+        _own_folder(conn, int(folder), user)
+        target = int(folder)
+    moved = 0
+    for kind, item_id in _parse_items(items):
+        table = _TABLE_FOR[kind]
+        row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (item_id,)).fetchone()
+        if row and owns_or_admin(user, row):
+            conn.execute(f"UPDATE {table} SET folder_id = ? WHERE id = ?", (target, item_id))
+            moved += 1
+    conn.commit()
+    conn.close()
+    return JSONResponse({"ok": True, "moved": moved})
+
+
+@app.post("/library/bulk-delete")
+async def library_bulk_delete(items: list[str] = Form(default=[]),
+                              user: dict = Depends(require_user)):
+    conn = get_db()
+    deleted = 0
+    for kind, item_id in _parse_items(items):
+        table = _TABLE_FOR[kind]
+        row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (item_id,)).fetchone()
+        if row and owns_or_admin(user, row):
+            _PURGE_FOR[kind](row)
+            conn.execute(f"DELETE FROM {table} WHERE id = ?", (item_id,))
+            deleted += 1
+    conn.commit()
+    conn.close()
+    return JSONResponse({"ok": True, "deleted": deleted})
 
 
 # ---------- Editor ----------
@@ -972,10 +1187,23 @@ def _load_owned_clip(conn, clip_id, user):
     return clip
 
 
+def _load_manageable(conn, request, table, kind, item_id, label="Item"):
+    """Load a row the caller may manage: owner/admin, or anon holding its draft.
+    Anonymous callers without the draft are sent to login; signed-in non-owners get 403."""
+    row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (item_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, f"{label} not found")
+    if not can_manage(request, row, kind):
+        if is_authenticated(request):
+            raise HTTPException(403, f"Not your {label.lower()}")
+        raise AuthRedirect()
+    return row
+
+
 @app.get("/clip/{clip_id}/edit")
-async def edit_page(request: Request, clip_id: int, user: dict = Depends(require_user)):
+async def edit_page(request: Request, clip_id: int):
     conn = get_db()
-    clip = _load_owned_clip(conn, clip_id, user)
+    clip = _load_manageable(conn, request, "clips", "clip", clip_id, "Clip")
     conn.close()
     source_filename = clip["source_filename"] or clip["filename"]
     source_path, source_subdir = find_source_path(source_filename)
@@ -987,14 +1215,15 @@ async def edit_page(request: Request, clip_id: int, user: dict = Depends(require
     return templates.TemplateResponse(
         request, "editor.html",
         {"clip": clip, "source_filename": source_filename, "source_subdir": source_subdir,
-         "active": "library", "authenticated": True, "user": user,
+         "active": "library", "authenticated": is_authenticated(request),
+         "user": current_user(request),
          "error": request.query_params.get("error")})
 
 
 @app.get("/clip/{clip_id}/status")
-async def clip_status(clip_id: int, user: dict = Depends(require_user)):
+async def clip_status(request: Request, clip_id: int):
     conn = get_db()
-    clip = _load_owned_clip(conn, clip_id, user)
+    clip = _load_manageable(conn, request, "clips", "clip", clip_id, "Clip")
     conn.close()
     return {"ready": bool(clip["ready"]), "status": clip["status"]}
 
@@ -1002,9 +1231,9 @@ async def clip_status(clip_id: int, user: dict = Depends(require_user)):
 @app.post("/clip/{clip_id}/trim")
 async def trim_clip(background: BackgroundTasks, clip_id: int, start: str = Form(...),
                     end: str = Form(...), save_as: str = Form("save"),
-                    request: Request = None, user: dict = Depends(require_user)):
+                    request: Request = None):
     conn = get_db()
-    clip = _load_owned_clip(conn, clip_id, user)
+    clip = _load_manageable(conn, request, "clips", "clip", clip_id, "Clip")
 
     def _err(msg):
         return RedirectResponse(url=f"/clip/{clip_id}/edit?error=" + urllib.parse.quote(msg),
@@ -1044,9 +1273,13 @@ async def trim_clip(background: BackgroundTasks, clip_id: int, start: str = Form
             "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, "
             "thumbnail, duration, ready, user_id) VALUES (?, ?, ?, 'edited', 'private', ?, ?, ?, 1, ?)",
             (out_name, out_name, f"{base_name} (copy)", new_slug, thumbnail, duration, clip["user_id"]))
+        if clip["pending"]:
+            conn.execute("UPDATE clips SET pending=1 WHERE id=?", (cur.lastrowid,))
         conn.commit()
         new_id = cur.lastrowid
         conn.close()
+        if not is_authenticated(request):
+            add_draft(request, "clip", new_id)
         return RedirectResponse(url=f"/clip/{new_id}/edit", status_code=303)
 
     # Save: replace this clip's current cut.
@@ -1073,14 +1306,33 @@ async def trim_clip(background: BackgroundTasks, clip_id: int, start: str = Form
 
 
 @app.post("/clip/{clip_id}/rename")
-async def rename_clip(clip_id: int, name: str = Form(...), user: dict = Depends(require_user)):
+async def rename_clip(request: Request, clip_id: int, name: str = Form(...)):
     conn = get_db()
-    _load_owned_clip(conn, clip_id, user)
+    _load_manageable(conn, request, "clips", "clip", clip_id, "Clip")
     name = name.strip() or None
     conn.execute("UPDATE clips SET display_name = ? WHERE id = ?", (name, clip_id))
     conn.commit()
     conn.close()
     return JSONResponse({"ok": True, "name": name})
+
+
+@app.post("/clip/{clip_id}/confirm")
+async def confirm_clip(request: Request, background: BackgroundTasks, clip_id: int,
+                       value: str = Form("unlisted")):
+    if value not in VISIBILITIES:
+        value = "unlisted"
+    conn = get_db()
+    clip = _load_manageable(conn, request, "clips", "clip", clip_id, "Clip")
+    slug = clip["slug"] or uuid.uuid4().hex[:8]
+    published = 1 if value in ("unlisted", "public") else 0
+    conn.execute("UPDATE clips SET pending=0, visibility=?, slug=?, published=? WHERE id=?",
+                 (value, slug, published, clip_id))
+    conn.commit()
+    conn.close()
+    clear_draft(request, "clip", clip_id)
+    if value in ("unlisted", "public") and (clip["hls_status"] or "none") not in ("pending", "ready"):
+        background.add_task(build_clip_hls, clip_id)
+    return RedirectResponse(url=f"/c/{slug}", status_code=303)
 
 
 @app.post("/clip/{clip_id}/visibility")
@@ -1103,26 +1355,25 @@ async def set_clip_visibility(request: Request, background: BackgroundTasks, cli
     return _back(request, f"/clip/{clip_id}/edit")
 
 
+def _post_delete_redirect(request: Request, edit_prefix: str):
+    """Back to the previous page, but never to the just-deleted item's edit page.
+    Anonymous users (no Library) go home."""
+    fallback = "/library" if is_authenticated(request) else "/"
+    if edit_prefix in (request.headers.get("referer") or ""):
+        return RedirectResponse(fallback, status_code=303)
+    return _back(request, fallback)
+
+
 @app.post("/clip/{clip_id}/delete")
-async def delete_clip(request: Request, clip_id: int, user: dict = Depends(require_user)):
+async def delete_clip(request: Request, clip_id: int):
     conn = get_db()
-    clip = _load_owned_clip(conn, clip_id, user)
-    for name in {clip["filename"], clip["source_filename"]}:
-        if not name:
-            continue
-        for base in (RAW_DIR, EDITED_DIR):
-            p = base / name
-            if p.exists():
-                p.unlink()
-    if clip["thumbnail"]:
-        tp = THUMBNAIL_DIR / clip["thumbnail"]
-        if tp.exists():
-            tp.unlink()
-    cleanup_hls_dir(clip["hls_dir"])
+    clip = _load_manageable(conn, request, "clips", "clip", clip_id, "Clip")
+    _purge_clip_files(clip)
     conn.execute("DELETE FROM clips WHERE id = ?", (clip_id,))
     conn.commit()
     conn.close()
-    return _back(request, "/library")
+    clear_draft(request, "clip", clip_id)
+    return _post_delete_redirect(request, f"/clip/{clip_id}/edit")
 
 
 @app.post("/clip/{clip_id}/publish")
@@ -1174,30 +1425,38 @@ async def share_image(request: Request, slug: str):
 
 
 @app.get("/image/{image_id}/edit")
-async def image_edit_page(request: Request, image_id: int, user: dict = Depends(require_user)):
+async def image_edit_page(request: Request, image_id: int):
     conn = get_db()
-    img = conn.execute("SELECT * FROM images WHERE id = ?", (image_id,)).fetchone()
+    img = _load_manageable(conn, request, "images", "image", image_id, "Screenshot")
     conn.close()
-    if not img:
-        raise HTTPException(404, "Screenshot not found")
-    if not owns_or_admin(user, img):
-        raise HTTPException(403, "Not your screenshot")
     return templates.TemplateResponse(request, "image_editor.html",
-                                      {"image": img, "active": "library", "authenticated": True, "user": user})
+                                      {"image": img, "active": "library",
+                                       "authenticated": is_authenticated(request),
+                                       "user": current_user(request)})
 
 
 @app.post("/image/{image_id}/rename")
-async def rename_image(image_id: int, name: str = Form(...), user: dict = Depends(require_user)):
+async def rename_image(request: Request, image_id: int, name: str = Form(...)):
     conn = get_db()
-    row = conn.execute("SELECT * FROM images WHERE id = ?", (image_id,)).fetchone()
-    if not row or not owns_or_admin(user, row):
-        conn.close()
-        raise HTTPException(403, "Not your screenshot")
+    _load_manageable(conn, request, "images", "image", image_id, "Screenshot")
     name = name.strip() or None
     conn.execute("UPDATE images SET display_name = ? WHERE id = ?", (name, image_id))
     conn.commit()
     conn.close()
     return JSONResponse({"ok": True, "name": name})
+
+
+@app.post("/image/{image_id}/confirm")
+async def confirm_image(request: Request, image_id: int, value: str = Form("unlisted")):
+    if value not in VISIBILITIES:
+        value = "unlisted"
+    conn = get_db()
+    img = _load_manageable(conn, request, "images", "image", image_id, "Screenshot")
+    conn.execute("UPDATE images SET pending=0, visibility=? WHERE id=?", (value, image_id))
+    conn.commit()
+    conn.close()
+    clear_draft(request, "image", image_id)
+    return RedirectResponse(url=f"/i/{img['slug']}", status_code=303)
 
 
 @app.post("/image/{image_id}/visibility")
@@ -1216,17 +1475,15 @@ async def set_image_visibility(request: Request, image_id: int, value: str = For
 
 
 @app.post("/image/{image_id}/delete")
-async def delete_image(request: Request, image_id: int, user: dict = Depends(require_user)):
+async def delete_image(request: Request, image_id: int):
     conn = get_db()
-    row = conn.execute("SELECT * FROM images WHERE id = ?", (image_id,)).fetchone()
-    if row and owns_or_admin(user, row):
-        p = IMAGES_DIR / row["filename"]
-        if p.exists():
-            p.unlink()
-        conn.execute("DELETE FROM images WHERE id = ?", (image_id,))
-        conn.commit()
+    row = _load_manageable(conn, request, "images", "image", image_id, "Screenshot")
+    _purge_image_files(row)
+    conn.execute("DELETE FROM images WHERE id = ?", (image_id,))
+    conn.commit()
     conn.close()
-    return _back(request, "/library")
+    clear_draft(request, "image", image_id)
+    return _post_delete_redirect(request, f"/image/{image_id}/edit")
 
 
 # ---------- Manual uploads ----------
@@ -1240,7 +1497,10 @@ async def _ingest_web(background, request, original_name, owner, place):
     new_name = f"{uuid.uuid4().hex}{ext}"
     slug = uuid.uuid4().hex[:8]
 
-    if kind == "video" and owner:
+    # Every web upload starts unconfirmed ('pending') and private. The uploader is
+    # sent to an edit/confirm screen; confirming sets the real visibility, and
+    # discarding deletes it. Anonymous uploaders get a session-draft capability.
+    if kind == "video":
         await place(RAW_DIR / new_name)
         # Faststart now (moov atom to the front) so the editor plays instantly,
         # even behind a proxy that doesn't honor range requests. The wait shows on
@@ -1248,39 +1508,44 @@ async def _ingest_web(background, request, original_name, owner, place):
         await run_in_threadpool(optimize_faststart, RAW_DIR / new_name)
         conn = get_db()
         cur = conn.execute(
-            "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, duration, ready, user_id) "
-            "VALUES (?, ?, ?, 'raw', 'private', ?, 0, 1, ?)",
+            "INSERT INTO clips (filename, source_filename, display_name, status, visibility, slug, duration, ready, pending, user_id) "
+            "VALUES (?, ?, ?, 'raw', 'private', ?, 0, 1, 1, ?)",
             (new_name, new_name, original_name, slug, owner_id))
         conn.commit()
         clip_id = cur.lastrowid
         conn.close()
         background.add_task(build_clip_metadata, clip_id, new_name, False)  # duration + thumbnail only
+        if not owner:
+            add_draft(request, "clip", clip_id)
         return {"ok": True, "kind": "clip", "id": clip_id, "edit": f"/clip/{clip_id}/edit"}
 
     if kind == "image":
         await place(IMAGES_DIR / new_name)
         conn = get_db()
-        conn.execute(
-            "INSERT INTO images (filename, display_name, slug, visibility, user_id) VALUES (?,?,?, 'unlisted', ?)",
+        cur = conn.execute(
+            "INSERT INTO images (filename, display_name, slug, visibility, pending, user_id) VALUES (?,?,?, 'private', 1, ?)",
             (new_name, original_name, slug, owner_id))
         conn.commit()
+        image_id = cur.lastrowid
         conn.close()
-        return {"ok": True, "kind": "image", "slug": slug,
-                "src": f"/media/images/{new_name}", "view": f"/i/{slug}"}
+        if not owner:
+            add_draft(request, "image", image_id)
+        return {"ok": True, "kind": "image", "id": image_id, "slug": slug,
+                "src": f"/media/images/{new_name}", "edit": f"/image/{image_id}/edit"}
 
     await place(UPLOADS_DIR / new_name)
     conn = get_db()
     cur = conn.execute(
-        "INSERT INTO uploads (filename, original_name, display_name, kind, slug, visibility, user_id) "
-        "VALUES (?,?,?,?,?, 'unlisted', ?)",
+        "INSERT INTO uploads (filename, original_name, display_name, kind, slug, visibility, pending, user_id) "
+        "VALUES (?,?,?,?,?, 'private', 1, ?)",
         (new_name, original_name, original_name, kind, slug, owner_id))
     conn.commit()
     upload_id = cur.lastrowid
     conn.close()
     background.add_task(build_upload_metadata, upload_id, new_name, kind)
-    if kind == "video":
-        background.add_task(build_upload_hls, upload_id)
-    return {"ok": True, "kind": kind, "slug": slug, "view": f"/u/{slug}"}
+    if not owner:
+        add_draft(request, "upload", upload_id)
+    return {"ok": True, "kind": kind, "id": upload_id, "slug": slug, "edit": f"/uploads/{upload_id}/edit"}
 
 
 @app.post("/uploads/add")
@@ -1306,6 +1571,16 @@ def _part_path(upload_id: str) -> Path:
     return TMP_DIR / f"{upload_id}.part"
 
 
+def _pwrite_at(fd: int, data: bytes, pos: int):
+    """Positional write. os.pwrite (Linux/prod) is atomic and best for parallel
+    chunks; lseek+write is the portable fallback (each request owns its own fd)."""
+    if hasattr(os, "pwrite"):
+        os.pwrite(fd, data, pos)
+    else:
+        os.lseek(fd, pos, os.SEEK_SET)
+        os.write(fd, data)
+
+
 def _chunk_auth(request: Request) -> bool:
     """True if this caller may upload. Capture-PC token or web session."""
     if UPLOAD_TOKEN and secrets.compare_digest(request.headers.get("x-upload-token", ""), UPLOAD_TOKEN):
@@ -1321,6 +1596,34 @@ async def upload_chunk(request: Request):
     if not rate_ok(f"up:{client_ip(request)}", 1200, 60):
         raise HTTPException(429, "Too many requests")
     dest = _part_path(request.headers.get("x-upload-id", ""))
+
+    # Positional writes let chunks upload in parallel: each lands at its own byte
+    # offset, so no stitching pass is needed afterward. Falls back to append when
+    # the offset header is absent (legacy clients).
+    offset_hdr = request.headers.get("x-chunk-offset")
+    if offset_hdr is not None:
+        try:
+            offset = int(offset_hdr)
+        except ValueError:
+            raise HTTPException(400, "Bad chunk offset")
+        if offset < 0 or offset > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "Upload exceeds maximum size")
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT, 0o644)
+        written = 0
+        try:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                pos = offset + written
+                if pos + len(chunk) > MAX_UPLOAD_BYTES:
+                    raise HTTPException(413, "Upload exceeds maximum size")
+                await run_in_threadpool(_pwrite_at, fd, chunk, pos)
+                written += len(chunk)
+        finally:
+            os.close(fd)
+        return {"ok": True, "received": offset + written}
+
+    # Legacy sequential append path.
     size = dest.stat().st_size if dest.exists() else 0
     try:
         async with aiofiles.open(dest, "ab") as f:
@@ -1340,12 +1643,17 @@ async def upload_chunk(request: Request):
 @app.post("/uploads/finish")
 async def upload_finish(request: Request, background: BackgroundTasks,
                         upload_id: str = Form(...), filename: str = Form(...),
-                        target: str = Form("web")):
+                        target: str = Form("web"), size: int = Form(0)):
     token_ok = bool(UPLOAD_TOKEN) and secrets.compare_digest(
         request.headers.get("x-upload-token", ""), UPLOAD_TOKEN)
     part = _part_path(upload_id)
     if not part.exists():
         raise HTTPException(400, "No upload data for that id")
+    # With parallel offset writes the assembled file should already be complete;
+    # verify the byte count so a dropped chunk can't produce a truncated file.
+    if size and part.stat().st_size != size:
+        part.unlink(missing_ok=True)
+        raise HTTPException(400, "Upload incomplete — please retry")
 
     # Capture-PC video -> a clip owned by admin (same result as /upload).
     if token_ok and target == "clip":
@@ -1387,10 +1695,41 @@ def _load_owned_upload(conn, upload_id, user):
     return row
 
 
-@app.post("/uploads/{upload_id}/rename")
-async def rename_upload(upload_id: int, name: str = Form(...), user: dict = Depends(require_user)):
+@app.get("/uploads/{upload_id}/edit")
+async def upload_edit_page(request: Request, upload_id: int):
     conn = get_db()
-    _load_owned_upload(conn, upload_id, user)
+    up = _load_manageable(conn, request, "uploads", "upload", upload_id, "Upload")
+    conn.close()
+    # Confirmed (non-pending) uploads have no edit screen of their own — view them.
+    if not up["pending"]:
+        return RedirectResponse(url=f"/u/{up['slug']}", status_code=303)
+    return templates.TemplateResponse(request, "upload_confirm.html",
+                                      {"upload": up, "active": "library",
+                                       "authenticated": is_authenticated(request),
+                                       "user": current_user(request)})
+
+
+@app.post("/uploads/{upload_id}/confirm")
+async def confirm_upload(request: Request, background: BackgroundTasks, upload_id: int,
+                         value: str = Form("unlisted")):
+    if value not in VISIBILITIES:
+        value = "unlisted"
+    conn = get_db()
+    up = _load_manageable(conn, request, "uploads", "upload", upload_id, "Upload")
+    conn.execute("UPDATE uploads SET pending=0, visibility=? WHERE id=?", (value, upload_id))
+    conn.commit()
+    conn.close()
+    clear_draft(request, "upload", upload_id)
+    if up["kind"] == "video" and value in ("unlisted", "public") \
+            and (up["hls_status"] or "none") not in ("pending", "ready"):
+        background.add_task(build_upload_hls, upload_id)
+    return RedirectResponse(url=f"/u/{up['slug']}", status_code=303)
+
+
+@app.post("/uploads/{upload_id}/rename")
+async def rename_upload(request: Request, upload_id: int, name: str = Form(...)):
+    conn = get_db()
+    _load_manageable(conn, request, "uploads", "upload", upload_id, "Upload")
     name = name.strip() or None
     conn.execute("UPDATE uploads SET display_name = ? WHERE id = ?", (name, upload_id))
     conn.commit()
@@ -1415,21 +1754,15 @@ async def set_upload_visibility(request: Request, background: BackgroundTasks, u
 
 
 @app.post("/uploads/{upload_id}/delete")
-async def delete_upload(request: Request, upload_id: int, user: dict = Depends(require_user)):
+async def delete_upload(request: Request, upload_id: int):
     conn = get_db()
-    row = _load_owned_upload(conn, upload_id, user)
-    path = UPLOADS_DIR / row["filename"]
-    if path.exists():
-        path.unlink()
-    if row["thumbnail"]:
-        tp = THUMBNAIL_DIR / row["thumbnail"]
-        if tp.exists():
-            tp.unlink()
-    cleanup_hls_dir(row["hls_dir"])
+    row = _load_manageable(conn, request, "uploads", "upload", upload_id, "Upload")
+    _purge_upload_files(row)
     conn.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
     conn.commit()
     conn.close()
-    return _back(request, "/library")
+    clear_draft(request, "upload", upload_id)
+    return _post_delete_redirect(request, f"/uploads/{upload_id}/edit")
 
 
 @app.get("/u/{slug}")

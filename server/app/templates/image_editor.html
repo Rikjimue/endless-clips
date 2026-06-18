@@ -24,6 +24,27 @@
         <button class="btn btn-primary btn-block" onclick="saveName()">Save name</button>
       </div>
 
+      {% if image.pending %}
+      <div class="panel">
+        <h2>Confirm upload</h2>
+        <p class="kbd-hint" style="margin:0 0 14px;">Name it above if you like, then confirm to get a shareable link. Discarding deletes it.</p>
+        <form action="/image/{{ image.id }}/confirm" method="post">
+          <span class="vis-label">Visibility</span>
+          <div class="vis-select" style="margin-bottom:14px;">
+            <select name="value" aria-label="Visibility">
+              <option value="unlisted" selected>Unlisted — anyone with the link</option>
+              <option value="public">Public — shown on Home</option>
+              <option value="private">Private — only you</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-primary btn-block">Confirm &amp; get link</button>
+        </form>
+        <form action="/image/{{ image.id }}/delete" method="post" style="margin-top:8px;"
+              data-confirm="Discard this screenshot? It will be permanently deleted." data-confirm-ok="Discard">
+          <button type="submit" class="btn btn-danger btn-block">Discard</button>
+        </form>
+      </div>
+      {% else %}
       <div class="panel">
         <h2>Visibility</h2>
         <span class="vis-label">Who can see this screenshot</span>
@@ -41,18 +62,19 @@
 
       <div class="panel">
         <h2>Danger zone</h2>
-        <form action="/image/{{ image.id }}/delete" method="post" onsubmit="return confirm('Delete this screenshot?')">
+        <form action="/image/{{ image.id }}/delete" method="post" data-confirm="Delete this screenshot?">
           <button type="submit" class="btn btn-danger btn-block">Delete screenshot</button>
         </form>
       </div>
+      {% endif %}
     </div>
   </div>
 </div>
 
 <script>
   const shareLinkEl = document.getElementById('share-link');
-  let shareLinkFull = location.origin + shareLinkEl.textContent;
-  shareLinkEl.textContent = shareLinkFull;
+  let shareLinkFull = '';
+  if (shareLinkEl) { shareLinkFull = location.origin + shareLinkEl.textContent; shareLinkEl.textContent = shareLinkFull; }
 
   async function saveName() {
     const v = document.getElementById('name-input').value.trim();

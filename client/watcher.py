@@ -1,7 +1,9 @@
 import os
 import time
 import subprocess
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import requests
@@ -114,32 +116,45 @@ def remux_to_mp4(path: Path) -> Path:
 
 
 def upload_video(path: Path) -> bool:
-    """Chunked upload so no single request exceeds the proxy body cap (Cloudflare 100MB)."""
+    """Chunked upload so no single request exceeds the proxy body cap (Cloudflare 100MB).
+
+    Chunks upload in parallel and the server writes each at its byte offset, so the
+    transfer is faster and no server-side stitching pass is needed.
+    """
     chunk_url = f"{SERVER}/uploads/chunk"
     finish_url = f"{SERVER}/uploads/finish"
     upload_id = uuid.uuid4().hex
     chunk_bytes = 90 * 1024 * 1024
+    workers = int(os.environ.get("CLIPS_UPLOAD_WORKERS", "3"))
     try:
         size = path.stat().st_size
+        offsets = list(range(0, max(size, 1), chunk_bytes))
         sent = 0
-        with open(path, "rb") as f:
-            index = 0
-            while True:
+        sent_lock = threading.Lock()
+
+        def send_chunk(offset):
+            nonlocal sent
+            with open(path, "rb") as f:
+                f.seek(offset)
                 data = f.read(chunk_bytes)
-                if not data:
-                    break
-                headers = dict(AUTH_HEADERS)
-                headers["X-Upload-Id"] = upload_id
-                headers["X-Chunk-Index"] = str(index)
-                headers["Content-Type"] = "application/octet-stream"
-                resp = session.post(chunk_url, data=data, headers=headers, timeout=600)
-                resp.raise_for_status()
+            headers = dict(AUTH_HEADERS)
+            headers["X-Upload-Id"] = upload_id
+            headers["X-Chunk-Offset"] = str(offset)
+            headers["Content-Type"] = "application/octet-stream"
+            resp = session.post(chunk_url, data=data, headers=headers, timeout=600)
+            resp.raise_for_status()
+            with sent_lock:
                 sent += len(data)
-                index += 1
                 log(f"  {path.name}: {sent}/{size} bytes")
+
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            futures = [pool.submit(send_chunk, off) for off in offsets]
+            for fut in as_completed(futures):
+                fut.result()  # re-raise the first failure
+
         resp = session.post(
             finish_url,
-            data={"upload_id": upload_id, "filename": path.name, "target": "clip"},
+            data={"upload_id": upload_id, "filename": path.name, "target": "clip", "size": size},
             headers=AUTH_HEADERS, timeout=120)
         resp.raise_for_status()
         log(f"Uploaded video {path.name} ({resp.status_code})")
